@@ -5,6 +5,8 @@ A [pion](https://github.com/pion/webrtc) based eyeson client written in Go.
 Build cross-plattform video applications that connect to any eyeson video
 conference.
 
+![](./ghost.png)
+
 Create a [community eyeson API key](developers.eyeson.team) to get started,
 visit the [documentation](https://eyeson-team.github.io/api/) or [eyeson-go
 package](https://pkg.go.dev/github.com/eyeson-team/eyeson-go)
