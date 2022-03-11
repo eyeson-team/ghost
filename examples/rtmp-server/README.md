@@ -8,7 +8,7 @@ webrtc.
 ```sh
 $ ./rtmp-server
 Usage:
-  rtmp-server [flags] $API_KEY
+  rtmp-server [flags] $API_KEY|$GUEST_LINK
 
 Flags:
       --api-endpoint string       Set api-endpoint (default "https://api.eyeson.team")
@@ -35,12 +35,7 @@ ffmpeg -re -i https://jell.yfish.us/media/jellyfish-3-mbps-hd-h264.mkv \
 
 ## Development
 
-The used libary [aler9/gortsplib)(https://github.com/aler9/gortsplib) use an
-rtpPayloadSize of 1460 which will exceed the MTU of lots of ISPs. To fix this,
-the Makefile target `vendor` will vendor and patch this library.
-
 ```sh
-make vendor # fetch dependencies
 make [build] # build the project
 make platforms # build platform specific executeable
 ```
