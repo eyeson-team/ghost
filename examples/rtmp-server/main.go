@@ -103,11 +103,11 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, rtmpListenA
 		os.Exit(0)
 	})
 
-	var rtmpTerminatedCh chan bool
+	rtmpTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
 		log.Println("Webrtc connected. Starting rtmp-server")
-		rtmpTerminatedCh = setupRtmpServer(localVideoTrack, rtmpListenAddr)
+		setupRtmpServer(localVideoTrack, rtmpListenAddr, rtmpTerminatedCh)
 
 	})
 
@@ -127,8 +127,7 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, rtmpListenA
 	eyesonClient.TerminateCall()
 }
 
-func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string) chan bool {
-	terminated := make(chan bool)
+func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminated chan<- bool) {
 	//
 	// start rtmp-listener
 	//
@@ -157,7 +156,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string) chan bool {
 			packet, err := reader.ReadPacket()
 			if err != nil {
 				log.Println("Failed to read packet:", err)
-				terminated <- true
+				rtmpTerminated <- true
 				return
 			}
 
@@ -211,5 +210,4 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string) chan bool {
 			}
 		}
 	}()
-	return terminated
 }
