@@ -23,6 +23,7 @@ var (
 	userFlag           string
 	roomIDFlag         string
 	rtmpListenAddrFlag string
+	verboseFlag        bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
@@ -43,6 +44,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtmp-test", "User name to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://127.0.0.1:1935", "rtmp address this server shall listen for")
+	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 
 	rootCommand.Execute()
 }
@@ -102,6 +104,12 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, rtmpListenA
 		log.Println("Call terminated")
 		os.Exit(0)
 	})
+
+	if verboseFlag {
+		eyesonClient.SetDataChannelHandler(func(data []byte) {
+			log.Printf("DC message: %s\n", string(data))
+		})
+	}
 
 	rtmpTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
