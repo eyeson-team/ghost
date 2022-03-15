@@ -22,12 +22,15 @@ type ConnectedHandler func(connected bool, localVideoTrack RTPWriter, localAudio
 
 type TerminatedHandler func()
 
+type DataChannelReceivedHandler func(data []byte)
+
 type EyesonClient interface {
 	Call() error
 	TerminateCall() error
 	Destroy()
 	SetConnectedHandler(ConnectedHandler)
 	SetTerminatedHandler(TerminatedHandler)
+	SetDataChannelHandler(DataChannelReceivedHandler)
 }
 
 // ClientConfigInterface extends the gosepp CallInfoInterface with methods to
@@ -43,18 +46,19 @@ type ClientConfigInterface interface {
 }
 
 type Client struct {
-	callInfo          ClientConfigInterface
-	clientID          string
-	confID            string
-	peerConnection    *webrtc.PeerConnection
-	call              *gosepp.Call
-	callID            string
-	sfuCapable        bool
-	sendPong          bool
-	sendOnly          bool
-	useH264Codec      bool
-	connectedHandler  ConnectedHandler
-	terminatedHandler TerminatedHandler
+	callInfo                   ClientConfigInterface
+	clientID                   string
+	confID                     string
+	peerConnection             *webrtc.PeerConnection
+	call                       *gosepp.Call
+	callID                     string
+	sfuCapable                 bool
+	sendPong                   bool
+	sendOnly                   bool
+	useH264Codec               bool
+	connectedHandler           ConnectedHandler
+	terminatedHandler          TerminatedHandler
+	dataChannelReceivedHandler DataChannelReceivedHandler
 }
 
 type ClientOption func(*Client)
@@ -116,6 +120,11 @@ func (cl *Client) SetConnectedHandler(handler ConnectedHandler) {
 // status updates.
 func (cl *Client) SetTerminatedHandler(handler TerminatedHandler) {
 	cl.terminatedHandler = handler
+}
+
+// SetDataChannelHandler forwards data received via data-channel.
+func (cl *Client) SetDataChannelHandler(handler DataChannelReceivedHandler) {
+	cl.dataChannelReceivedHandler = handler
 }
 
 // Call initiates a connection.
@@ -306,12 +315,12 @@ func (cl *Client) initStack(useH264Codec bool) error {
 
 		// Register channel opening handling
 		dataChannel.OnOpen(func() {
-			log.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
+			//log.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
 		})
 
 		// Register text message handling
 		dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-			log.Printf("Message from DataChannel '%s': '%s'\n", dataChannel.Label(), string(msg.Data))
+			//log.Printf("Message from DataChannel '%s': '%s'\n", dataChannel.Label(), string(msg.Data))
 
 			type base struct {
 				MsgType string `json:"type"`
@@ -329,6 +338,10 @@ func (cl *Client) initStack(useH264Codec bool) error {
 					b, _ := json.Marshal(pong)
 					dataChannel.Send(b)
 				}
+			}
+
+			if cl.dataChannelReceivedHandler != nil {
+				cl.dataChannelReceivedHandler(msg.Data)
 			}
 
 		})
