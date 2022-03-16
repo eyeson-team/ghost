@@ -43,7 +43,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtmp-test", "User name to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
-	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://127.0.0.1:1935", "rtmp address this server shall listen for")
+	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://0.0.0.0:1935", "rtmp address this server shall listen for")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 
 	rootCommand.Execute()
@@ -153,7 +153,6 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			return
 		}
 
-		// Note: we must set the `rtpPayloadMaxSize` in the rtph264-encoder.
 		var h264Encoder *rtph264.Encoder
 		h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
 
@@ -170,10 +169,10 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 
 			switch packet.Type {
 			case av.H264DecoderConfig:
-				// read SPS and PPS and save them so the can be
-				// prepend to the keyframes
+				// read SPS and PPS and save them so those can be
+				// prepended to each keyframe.
 				// A different solution would be to signal the sprops via sdp.
-				// But this require to start the call _after_ the rtmp-client
+				// But this would require to start the call _after_ the rtmp-client
 				// is connected.
 				codec, err := rtmph264.FromDecoderConfig(packet.Data)
 				if err != nil {
