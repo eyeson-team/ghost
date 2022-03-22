@@ -108,11 +108,11 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user, roo
 		})
 	}
 
-	rtmpTerminatedCh := make(chan bool)
+	rtspTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
 		log.Println("Webrtc connected. Connecting to ", rtspConnectURL)
-		setupRtspClient(localVideoTrack, rtspConnectURL, rtmpTerminatedCh)
+		setupRtspClient(localVideoTrack, rtspConnectURL, rtspTerminatedCh)
 
 	})
 
@@ -121,13 +121,13 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user, roo
 		return
 	}
 
-	// Block until rtmp-connection is done
+	// Block until rtsp-connection is done
 	select {
-	case <-rtmpTerminatedCh:
+	case <-rtspTerminatedCh:
 		break
 	}
 
-	log.Println("RTMP connection is done. So terminating this call")
+	log.Println("RTSP connection is done. So terminating this call")
 	// terminate this call
 	eyesonClient.TerminateCall()
 }
@@ -143,20 +143,26 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// parse URL
 		u, err := base.ParseURL(rtspConnectURL)
 		if err != nil {
-			panic(err)
+			log.Printf("Parse RTSP-Url failed with %s.", err)
+			rtspTerminated <- true
+			return
 		}
 
 		// connect to the server
 		err = c.Start(u.Scheme, u.Host)
 		if err != nil {
-			panic(err)
+			log.Printf("Connecting to rtsp server failed with %s.", err)
+			rtspTerminated <- true
+			return
 		}
 		defer c.Close()
 
 		// find published tracks
 		tracks, baseURL, _, err := c.Describe(u)
 		if err != nil {
-			panic(err)
+			log.Printf("Connecting to rtsp server failed with %s.", err)
+			rtspTerminated <- true
+			return
 		}
 
 		log.Println("tracks:", tracks)
@@ -172,14 +178,18 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			return -1, nil
 		}()
 		if h264TrackID < 0 {
-			panic("H264 track not found")
+			log.Printf("No h264 track found")
+			rtspTerminated <- true
+			return
 		}
 
 		sps := h264track.SPS()
 		pps := h264track.PPS()
 
 		if sps == nil || pps == nil {
-			panic("Neither sps nor pps")
+			log.Printf("SPS or PPS not present")
+			rtspTerminated <- true
+			return
 		}
 
 		h264Encoder := rtph264.Encoder{
@@ -237,7 +247,9 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		err = c.SetupAndPlay(tracks, baseURL)
 		if err != nil {
-			panic(err)
+			log.Printf("Failed to start rtsp: %s", err)
+			rtspTerminated <- true
+			return
 		}
 
 		// wait until a fatal error
