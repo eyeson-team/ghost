@@ -6,7 +6,7 @@ and injecting that stream via webrtc in an eyeson meeting.
 ## Usage
 
 ```sh
-$ ./rtmp-client
+$ ./rtsp-client
 Usage:
   rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL
 
@@ -23,7 +23,7 @@ or a guest link to join an existing one.
 
 ```sh
 $ export API_KEY=<...>
-$ ./rtmp-client $API_KEY|$GUEST_LINK RTSP_CONNECT_URL
+$ ./rtsp-client $API_KEY|$GUEST_LINK RTSP_CONNECT_URL
 ```
 
 In order to have an RTSP-Server for testing use vlc to make a webcam
