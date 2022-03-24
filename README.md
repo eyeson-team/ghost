@@ -7,7 +7,7 @@ conference.
 
 ![](./ghost.png)
 
-Create a [community eyeson API key](developers.eyeson.team) to get started,
+Create a [community eyeson API key](https://developers.eyeson.team) to get started,
 visit the [documentation](https://eyeson-team.github.io/api/) or [eyeson-go
 package](https://pkg.go.dev/github.com/eyeson-team/eyeson-go)
 
