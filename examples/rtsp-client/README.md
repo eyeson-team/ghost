@@ -1,6 +1,6 @@
 # eyeson Ghost RTSP-Client
 
-A small test example on connecting to an RTSP-Server (webcam, etc.)
+A small test example on connecting to an RTSP-Server (IP-Cam, etc.)
 and injecting that stream via webrtc in an eyeson meeting.
 
 ## Usage

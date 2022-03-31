@@ -14,6 +14,7 @@ import (
 	"github.com/eyeson-team/eyeson-go"
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/pion/rtp"
+	rtpv2 "github.com/pion/rtp/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -139,6 +140,9 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 	//
 	go func() {
 
+		// Make ReadBufferSize large enough to fit whole keyframes.
+		// Some IP-Cams rely on ip-fragmentation which results
+		// in large UDP packets.
 		c := gortsplib.Client{ReadBufferSize: 2 << 20}
 		// parse URL
 		u, err := base.ParseURL(rtspConnectURL)
@@ -195,45 +199,25 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		log.Println("SPS:", len(sps))
 		log.Println("PPS:", len(pps))
 
-		/*
-			h264Encoder := rtph264.Encoder{
-				PayloadType:    96,
-				PayloadMaxSize: 1200,
-			}
-			h264Encoder.Init()
-		*/
-		var h264Encoder *rtph264.Encoder
-		h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
+		h264Encoder := rtph264.Encoder{
+			PayloadType:    96,
+			PayloadMaxSize: 1200,
+		}
+		h264Encoder.Init()
 
 		// setup RTP->H264 decoder
-		/*rtpDec := &rtph264.Decoder{}
+		rtpDec := &rtph264.Decoder{}
 		rtpDec.Init()
-		*/
-		rtpDec := rtph264.NewDecoder()
 
 		var lastRTPts uint32
 
-		doth264File, err := NewDotH264("dump.h264")
-		if err != nil {
-			log.Fatal("Failed:", err)
-		}
-
 		firstKeyFrame := false
 
-		//c.OnPacketRTP = func(trackID int, pkt *rtpv2.Packet) {
-		c.OnPacketRTP = func(trackID int, payload []byte) {
-			//log.Printf("trackid %d payload-len: %d", trackID, len(payload))
+		c.OnPacketRTP = func(trackID int, pkt *rtpv2.Packet) {
 
 			if trackID != h264TrackID {
 				return
 			}
-
-			var pkt rtp.Packet
-			err := pkt.Unmarshal(payload)
-			if err != nil {
-				return
-			}
-			//log.Printf("packet received: %d %d %d", pkt.SequenceNumber, pkt.Timestamp, len(pkt.Payload))
 
 			if lastRTPts != 0 {
 				if pkt.Timestamp < lastRTPts {
@@ -242,13 +226,15 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			}
 			lastRTPts = pkt.Timestamp
 
-			//log.Printf("Decode ts: %d pl.size: %d", pkt.Timestamp, len(pkt.Payload))
-
 			// decode H264 NALUs from the RTP packet
-			nalus, ptsDur, err := rtpDec.Decode(&pkt)
+			nalus, ptsDur, err := rtpDec.Decode(pkt)
 			if err != nil {
 				//log.Printf("Decode failed: %s", err)
 				return
+			}
+
+			if len(nalus) != 1 {
+				log.Printf("Warning: Tested only with Decode returning 1 nalu at a time.")
 			}
 
 			typ := rtsph264.NALUType(nalus[0][0] & 0x1F)
@@ -261,7 +247,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 				// ignore new PPS. Take it from the track-info.
 				return
 			case rtsph264.NALUTypeIDR:
-				// prepand keyframe with SPS and PPS
+				// prepend keyframe with SPS and PPS
 				nalus = append([][]byte{pps}, nalus...)
 				nalus = append([][]byte{sps}, nalus...)
 				firstKeyFrame = true
@@ -270,10 +256,6 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			// wait for first key-frame
 			if !firstKeyFrame {
 				return
-			}
-
-			if err := doth264File.WriteNalus(nalus); err != nil {
-				log.Println("Failed to write to file:", err)
 			}
 
 			// convert nalus to rtp-packets

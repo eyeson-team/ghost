@@ -4,6 +4,8 @@ import (
 	"os"
 )
 
+// Dump h264 nalsu to a h264 file, which can be
+// played with ffmpeg.
 type DotH264 struct {
 	file *os.File
 }
