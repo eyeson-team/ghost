@@ -3,7 +3,6 @@ package ghost
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -159,12 +158,10 @@ func (cl *Client) initSig() error {
 	cl.call = call
 
 	call.SetSDPUpdateHandler(func(sdp gosepp.Sdp) {
-		log.Printf("Sdp update with type %s sdp: %s\n", sdp.SdpType, sdp.Sdp)
 		onSdpUpdate(call, cl.peerConnection, sdp)
 	})
 
 	call.SetTerminatedHandler(func() {
-		log.Println("Call terminated")
 		if cl.terminatedHandler != nil {
 			cl.terminatedHandler()
 		}
@@ -404,21 +401,21 @@ func onSdpUpdate(call *gosepp.Call, pc *webrtc.PeerConnection, sdp gosepp.Sdp) {
 
 		err := pc.SetRemoteDescription(offer)
 		if err != nil {
-			panic(fmt.Sprintf("Failed to set remote description: %s", err))
+			log.Printf("Failed to set remote description: %s", err)
 			return
 		}
 
 		// create Answer
 		answer, err := pc.CreateAnswer(nil)
 		if err != nil {
-			panic(fmt.Sprintf("Failed to create answer: %s", err))
+			log.Printf("Failed to create answer: %s", err)
 			return
 		}
 
 		// Sets the LocalDescription, and starts our UDP listeners
 		err = pc.SetLocalDescription(answer)
 		if err != nil {
-			panic(fmt.Sprintf("Failed to set local description: %s", err))
+			log.Printf("Failed to set local description: %s", err)
 			return
 		}
 
