@@ -9,11 +9,11 @@ import (
 
 	"github.com/aler9/gortsplib"
 	"github.com/aler9/gortsplib/pkg/base"
+	rtsph264 "github.com/aler9/gortsplib/pkg/h264"
 	"github.com/aler9/gortsplib/pkg/rtph264"
 	"github.com/eyeson-team/eyeson-go"
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/pion/rtp"
-	rtpv2 "github.com/pion/rtp/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -135,11 +135,11 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user, roo
 func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 	rtspTerminated chan<- bool) {
 	//
-	// start rtmp-listener
+	// start rtsp-listener
 	//
 	go func() {
 
-		c := gortsplib.Client{}
+		c := gortsplib.Client{ReadBufferSize: 2 << 20}
 		// parse URL
 		u, err := base.ParseURL(rtspConnectURL)
 		if err != nil {
@@ -192,57 +192,120 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			return
 		}
 
-		h264Encoder := rtph264.Encoder{
-			PayloadType:    96,
-			PayloadMaxSize: 1200,
-		}
-		h264Encoder.Init()
+		log.Println("SPS:", len(sps))
+		log.Println("PPS:", len(pps))
+
+		/*
+			h264Encoder := rtph264.Encoder{
+				PayloadType:    96,
+				PayloadMaxSize: 1200,
+			}
+			h264Encoder.Init()
+		*/
+		var h264Encoder *rtph264.Encoder
+		h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
 
 		// setup RTP->H264 decoder
-		rtpDec := &rtph264.Decoder{}
+		/*rtpDec := &rtph264.Decoder{}
 		rtpDec.Init()
+		*/
+		rtpDec := rtph264.NewDecoder()
 
-		c.OnPacketRTP = func(trackID int, pkt *rtpv2.Packet) {
-			//log.Printf("trackID %d packet received: %s", pkt.String)
+		var lastRTPts uint32
 
-			if trackID == h264TrackID {
-				// decode H264 NALUs from the RTP packet
-				nalus, ptsDur, err := rtpDec.Decode(pkt)
+		doth264File, err := NewDotH264("dump.h264")
+		if err != nil {
+			log.Fatal("Failed:", err)
+		}
+
+		firstKeyFrame := false
+
+		//c.OnPacketRTP = func(trackID int, pkt *rtpv2.Packet) {
+		c.OnPacketRTP = func(trackID int, payload []byte) {
+			//log.Printf("trackid %d payload-len: %d", trackID, len(payload))
+
+			if trackID != h264TrackID {
+				return
+			}
+
+			var pkt rtp.Packet
+			err := pkt.Unmarshal(payload)
+			if err != nil {
+				return
+			}
+			//log.Printf("packet received: %d %d %d", pkt.SequenceNumber, pkt.Timestamp, len(pkt.Payload))
+
+			if lastRTPts != 0 {
+				if pkt.Timestamp < lastRTPts {
+					log.Printf("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
+				}
+			}
+			lastRTPts = pkt.Timestamp
+
+			//log.Printf("Decode ts: %d pl.size: %d", pkt.Timestamp, len(pkt.Payload))
+
+			// decode H264 NALUs from the RTP packet
+			nalus, ptsDur, err := rtpDec.Decode(&pkt)
+			if err != nil {
+				//log.Printf("Decode failed: %s", err)
+				return
+			}
+
+			typ := rtsph264.NALUType(nalus[0][0] & 0x1F)
+			//log.Println("typ:", typ.String())
+			switch typ {
+			case rtsph264.NALUTypeSPS:
+				// ignore new SPS. Take it from the track-info.
+				return
+			case rtsph264.NALUTypePPS:
+				// ignore new PPS. Take it from the track-info.
+				return
+			case rtsph264.NALUTypeIDR:
+				// prepand keyframe with SPS and PPS
+				nalus = append([][]byte{pps}, nalus...)
+				nalus = append([][]byte{sps}, nalus...)
+				firstKeyFrame = true
+			}
+
+			// wait for first key-frame
+			if !firstKeyFrame {
+				return
+			}
+
+			if err := doth264File.WriteNalus(nalus); err != nil {
+				log.Println("Failed to write to file:", err)
+			}
+
+			// convert nalus to rtp-packets
+			pkts, err := h264Encoder.Encode(nalus, ptsDur)
+			if err != nil {
+				log.Fatalf("error while encoding H264: %v", err)
+			}
+
+			//log.Printf("Created %d packets", len(pkts))
+
+			for _, pkt := range pkts {
+				// convert rtpv2 to rtpv1
+				b, err := pkt.Marshal()
 				if err != nil {
+					log.Printf("Failed to marshal v2-packet")
+				}
+				var pktv1 rtp.Packet
+				err = pktv1.Unmarshal(b)
+				if err != nil {
+					log.Printf("Failed to unmarshal to v1-packet")
+				}
+
+				//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pktv1.Timestamp, pktv1.SequenceNumber,
+				//	len(pktv1.Payload), pktv1.Marker)
+
+				err = videoTrack.WriteRTP(&pktv1)
+				if err != nil {
+					log.Printf("Failed to write h264 sample: %s", err)
 					return
 				}
-
-				// prepend sps and pps. Would be required for keyframes only.
-				// So determine keyframes.
-				nalus = append(nalus, sps)
-				nalus = append(nalus, pps)
-
-				// convert nalus to rtp-packets
-				pkts, err := h264Encoder.Encode(nalus, ptsDur)
-				if err != nil {
-					log.Fatalf("error while encoding H264: %v", err)
-				}
-
-				for _, pkt := range pkts {
-					// convert rtpv2 to rtpv1
-					b, err := pkt.Marshal()
-					if err != nil {
-						log.Printf("Failed to marshal v2-packet")
-					}
-					var pktv1 rtp.Packet
-					err = pktv1.Unmarshal(b)
-					if err != nil {
-						log.Printf("Failed to unmarshal to v1-packet")
-					}
-
-					err = videoTrack.WriteRTP(&pktv1)
-					if err != nil {
-						log.Printf("Failed to write h264 sample: %s", err)
-						return
-					}
-				}
-
 			}
+
 		}
 
 		err = c.SetupAndPlay(tracks, baseURL)

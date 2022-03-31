@@ -5,6 +5,11 @@ default: build
 build:
 	@go build -o bin/rtsp-client main.go
 
+build-cgo:
+	CGO_ENABLED=0 go build  -a -installsuffix cgo -o bin/rtsp-client *.go
+	#CGO_ENABLED=0 go build -mod=vendor  -a -installsuffix cgo -o bin/rtsp-client *.go
+
+
 .PHONY: platforms
 platforms:
 	CGO_ENABLED=0 gox -output="bin/{{.OS}}_{{.Arch}}/rtsp-client_{{.OS}}_{{.Arch}}" \
