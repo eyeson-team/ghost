@@ -155,10 +155,16 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 
 		log.Println("RTMP server listening: ", listenAddr)
 
+		// Init the rtph264-rtp-header-encoder only once,
+		// and reuse if another rtmp-client connects.
+		h264Encoder := rtph264.Encoder{
+			PayloadType:    96,
+			PayloadMaxSize: 1200,
+		}
+		h264Encoder.Init()
+
 		rtmpServer.HandleConn = func(c *rtmp.Conn, nc net.Conn) {
 			log.Println("New rtmp-conn created")
-			var h264Encoder *rtph264.Encoder
-			h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
 
 			sps := []byte{}
 			pps := []byte{}
