@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aler9/gortsplib/pkg/h264"
 	"github.com/aler9/gortsplib/pkg/rtph264"
@@ -13,7 +15,6 @@ import (
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/notedit/rtmp/av"
 	rtmph264 "github.com/notedit/rtmp/codec/h264"
-	"github.com/notedit/rtmp/format"
 	"github.com/notedit/rtmp/format/rtmp"
 	"github.com/spf13/cobra"
 )
@@ -141,80 +142,95 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 	//
 	go func() {
 
-		uo := format.URLOpener{OnNewRtmpConn: func(c *rtmp.Conn) {
-			log.Println("New client connected")
-		}}
+		rtmpServer := rtmp.NewServer()
 
-		log.Println("RTMP server listening: ", listenAddr)
+		url, _ := url.Parse(listenAddr)
+		host := rtmp.UrlGetHost(url)
 
-		reader, err := uo.Open("@" + listenAddr)
-		if err != nil {
-			log.Println("Err:", err)
+		var err error
+		var lis net.Listener
+		if lis, err = net.Listen("tcp", host); err != nil {
 			return
 		}
 
-		var h264Encoder *rtph264.Encoder
-		h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
+		log.Println("RTMP server listening: ", listenAddr)
 
-		sps := []byte{}
-		pps := []byte{}
+		rtmpServer.HandleConn = func(c *rtmp.Conn, nc net.Conn) {
+			log.Println("New rtmp-conn created")
+			var h264Encoder *rtph264.Encoder
+			h264Encoder = rtph264.NewEncoder(96, nil, nil, nil)
 
-		for {
-			packet, err := reader.ReadPacket()
-			if err != nil {
-				log.Println("Failed to read packet:", err)
-				rtmpTerminated <- true
-				return
-			}
+			sps := []byte{}
+			pps := []byte{}
 
-			switch packet.Type {
-			case av.H264DecoderConfig:
-				// read SPS and PPS and save them so those can be
-				// prepended to each keyframe.
-				// A different solution would be to signal the sprops via sdp.
-				// But this would require to start the call _after_ the rtmp-client
-				// is connected.
-				codec, err := rtmph264.FromDecoderConfig(packet.Data)
+			for {
+				packet, err := c.ReadPacket()
 				if err != nil {
-					log.Fatalf("Failed to decode decoder-config:", err)
+					log.Println("Failed to read packet:", err)
+					//rtmpTerminated <- true
+					return
 				}
 
-				if len(codec.SPS) > 0 {
-					sps = codec.SPS[0]
-				}
-				if len(codec.PPS) > 0 {
-					pps = codec.PPS[0]
-				}
-
-			case av.H264:
-
-				// rtmp h264 packet uses AVCC bit-stream
-				// extract nalus from that bitstream
-				nalus, err := h264.DecodeAVCC(packet.Data)
-				if err != nil {
-					log.Fatalf("Failed to decode packet:", err)
-				}
-
-				// only prepend keyframes with sps and pps
-				if packet.IsKeyFrame {
-					nalus = append(nalus, sps)
-					nalus = append(nalus, pps)
-				}
-
-				// convert nalus to rtp-packets
-				pkts, err := h264Encoder.Encode(nalus, packet.Time)
-				if err != nil {
-					log.Fatalf("error while encoding H264: %v", err)
-				}
-
-				for _, pkt := range pkts {
-					err = videoTrack.WriteRTP(pkt)
+				switch packet.Type {
+				case av.H264DecoderConfig:
+					// read SPS and PPS and save them so those can be
+					// prepended to each keyframe.
+					// A different solution would be to signal the sprops via sdp.
+					// But this would require to start the call _after_ the rtmp-client
+					// is connected.
+					codec, err := rtmph264.FromDecoderConfig(packet.Data)
 					if err != nil {
-						log.Printf("Failed to write h264 sample: %s", err)
-						return
+						log.Fatalf("Failed to decode decoder-config:", err)
+					}
+
+					if len(codec.SPS) > 0 {
+						sps = codec.SPS[0]
+					}
+					if len(codec.PPS) > 0 {
+						pps = codec.PPS[0]
+					}
+
+				case av.H264:
+
+					// rtmp h264 packet uses AVCC bit-stream
+					// extract nalus from that bitstream
+					nalus, err := h264.DecodeAVCC(packet.Data)
+					if err != nil {
+						log.Fatalf("Failed to decode packet:", err)
+					}
+
+					// only prepend keyframes with sps and pps
+					if packet.IsKeyFrame {
+						nalus = append(nalus, sps)
+						nalus = append(nalus, pps)
+					}
+
+					// convert nalus to rtp-packets
+					pkts, err := h264Encoder.Encode(nalus, packet.Time)
+					if err != nil {
+						log.Fatalf("error while encoding H264: %v", err)
+					}
+
+					for _, pkt := range pkts {
+						err = videoTrack.WriteRTP(pkt)
+						if err != nil {
+							log.Printf("Failed to write h264 sample: %s", err)
+							return
+						}
 					}
 				}
 			}
 		}
+
+		for {
+			nc, err := lis.Accept()
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			log.Println("New Client connected")
+			rtmpServer.HandleNetConn(nc)
+		}
+
 	}()
 }
