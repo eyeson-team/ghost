@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aler9/gortsplib/pkg/h264"
@@ -129,8 +131,14 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 		return
 	}
 
+	// install signal-handler
+	chStop := make(chan os.Signal, 1)
+	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
+
 	// Block until rtmp-connection is done
 	select {
+	case <-chStop:
+		break
 	case <-rtmpTerminatedCh:
 		break
 	}
