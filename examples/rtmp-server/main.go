@@ -22,6 +22,7 @@ import (
 var (
 	apiEndpointFlag    string
 	userFlag           string
+	userIDFlag         string
 	roomIDFlag         string
 	rtmpListenAddrFlag string
 	verboseFlag        bool
@@ -35,7 +36,8 @@ var (
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			rtmpServerExample(args[0], apiEndpointFlag,
-				userFlag, roomIDFlag, rtmpListenAddrFlag)
+				userFlag, roomIDFlag, rtmpListenAddrFlag,
+				userIDFlag)
 		},
 	}
 )
@@ -43,6 +45,7 @@ var (
 func main() {
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtmp-test", "User name to use")
+	rootCommand.Flags().StringVarP(&userIDFlag, "user-id", "", "", "User it to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://0.0.0.0:1935", "rtmp address this server shall listen for")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
@@ -51,7 +54,7 @@ func main() {
 }
 
 // Get a room depending on the provided api-key or guestlink.
-func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID string) (*eyeson.UserService, error) {
+func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyeson.UserService, error) {
 	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
 		// join as guest
@@ -66,7 +69,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID string) (*eyeson.UserS
 		client := eyeson.NewClient("")
 		baseURL, _ := url.Parse(apiEndpoint)
 		client.BaseURL = baseURL
-		return client.Rooms.GuestJoin(guestToken, roomID, user, "")
+		return client.Rooms.GuestJoin(guestToken, userID, user, "")
 
 	} else {
 		// let's assume we have an apiKey, so fire up a new meeting
@@ -77,9 +80,10 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID string) (*eyeson.UserS
 	}
 }
 
-func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, rtmpListenAddr string) {
+func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
+	rtmpListenAddr, userID string) {
 
-	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID)
+	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID)
 	if err != nil {
 		log.Println("Failed to get room")
 		return
