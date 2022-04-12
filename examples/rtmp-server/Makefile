@@ -4,7 +4,7 @@ default: build
 
 .PHONY: build
 build:
-	@go build -o bin/rtmp-server main.go
+	@go build -o bin/rtmp-server rtmp-server
 
 .PHONY: platforms
 platforms:
