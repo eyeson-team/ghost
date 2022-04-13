@@ -108,8 +108,6 @@ github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7
 github.com/envoyproxy/protoc-gen-validate v0.6.2/go.mod h1:2t7qjJNvHPx8IjnBOzl9E9/baC+qXE/TeeyBRzgJDws=
 github.com/eyeson-team/eyeson-go v1.1.2-0.20220308152915-af4b016488d5 h1:HIWxADQG4jJAg/QCXi8AukuKGZbevlHpj5lWwrP6BkU=
 github.com/eyeson-team/eyeson-go v1.1.2-0.20220308152915-af4b016488d5/go.mod h1:Ik/y12cmQENCSfNN32srJt37TIPOOVfdHIRbdZYBqwg=
-github.com/eyeson-team/ghost/v2 v2.0.3 h1:UHBDsyi541WT8a2Iuc7ZKN4Z0UoP+2fJ+jwPQbg4AcI=
-github.com/eyeson-team/ghost/v2 v2.0.3/go.mod h1:hL06L3P+Pacirxl/ne/2Y7Vn56uQzOJPtfCvjtiakFc=
 github.com/eyeson-team/ghost/v2 v2.0.4-0.20220322104449-5b6136418403 h1:HGZBtPFm2Spk0s610bga/sf2fYzEBd9Jxf42Z7Zunnc=
 github.com/eyeson-team/ghost/v2 v2.0.4-0.20220322104449-5b6136418403/go.mod h1:hL06L3P+Pacirxl/ne/2Y7Vn56uQzOJPtfCvjtiakFc=
 github.com/eyeson-team/gosepp/v2 v2.0.0 h1:7olJ6VZVttIibrgvxXnvrDBxs4HN30l8rN1mwG5Pakk=

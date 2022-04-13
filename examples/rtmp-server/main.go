@@ -22,12 +22,13 @@ import (
 )
 
 var (
-	apiEndpointFlag    string
-	userFlag           string
-	userIDFlag         string
-	roomIDFlag         string
-	rtmpListenAddrFlag string
-	verboseFlag        bool
+	apiEndpointFlag      string
+	userFlag             string
+	userIDFlag           string
+	roomIDFlag           string
+	rtmpListenAddrFlag   string
+	verboseFlag          bool
+	jitterQueueLenMSFlag int32
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
@@ -51,6 +52,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://0.0.0.0:1935", "rtmp address this server shall listen to")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
+	rootCommand.Flags().Int32VarP(&jitterQueueLenMSFlag, "delay", "", 150, "delay in ms")
 
 	rootCommand.Execute()
 }
@@ -181,6 +183,13 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			sps := []byte{}
 			pps := []byte{}
 
+			videoJB, err := NewVideoJitterBuffer(videoTrack,
+				time.Duration(jitterQueueLenMSFlag)*time.Millisecond)
+			if err != nil {
+				log.Fatalf("Failed to setup vjb: %s", err)
+			}
+			defer videoJB.Close()
+
 			for {
 				packet, err := c.ReadPacket()
 				if err != nil {
@@ -230,7 +239,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					}
 
 					for _, pkt := range pkts {
-						err = videoTrack.WriteRTP(pkt)
+						err = videoJB.WriteRTP(pkt)
 						if err != nil {
 							log.Printf("Failed to write h264 sample: %s", err)
 							return
