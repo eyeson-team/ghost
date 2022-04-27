@@ -17,6 +17,8 @@ platforms:
 							-osarch="linux/amd64 linux/arm linux/arm64 darwin/amd64 darwin/arm64 windows/amd64" rtsp-client
 	upx bin/*/rtsp-client_*
 
+# Note, that an image go-builder is required which contains
+# gox and upx.
 .PHONY: platforms-via-container
 platforms-via-container:
 	podman run --rm -it -v `pwd`/.:/build:z go-builder sh -c "cd /build &&  make platforms"
