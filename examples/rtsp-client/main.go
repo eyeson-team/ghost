@@ -72,7 +72,11 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 		client := eyeson.NewClient(apiKeyOrGuestlink)
 		baseURL, _ := url.Parse(apiEndpoint)
 		client.BaseURL = baseURL
-		return client.Rooms.Join(roomID, user, nil)
+		options := map[string]string{}
+		if len(userID) > 0 {
+			options["user[id]"] = userID
+		}
+		return client.Rooms.Join(roomID, user, options)
 	}
 }
 
