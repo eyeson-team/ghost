@@ -136,6 +136,9 @@ func (cl *Client) Call() error {
 
 	_, sdpAnswer, err := cl.call.Start(context.Background(),
 		gosepp.Sdp{SdpType: "offer", Sdp: offer}, cl.callInfo.GetDisplayname())
+	if err != nil {
+		return err
+	}
 
 	if err := cl.peerConnection.SetRemoteDescription(
 		webrtc.SessionDescription{SDP: sdpAnswer.Sdp, Type: webrtc.SDPTypeAnswer}); err != nil {
