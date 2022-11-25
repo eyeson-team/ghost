@@ -3,26 +3,59 @@ package ghost
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
 	"strings"
 	"time"
 
-	"github.com/eyeson-team/gosepp/v2"
+	"github.com/eyeson-team/gosepp/v3"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 )
 
+// StdoutLogger simple logger logging everything to stdout
+type StdoutLogger struct{}
+
+// Error log error msg
+func (sl *StdoutLogger) Error(format string, v ...interface{}) {
+	fmt.Printf("GHOST [ERROR] %s\n", fmt.Sprintf(format, v...))
+}
+
+// Warn log warn message
+func (sl *StdoutLogger) Warn(format string, v ...interface{}) {
+	fmt.Printf("GHOST [WARN] %s\n", fmt.Sprintf(format, v...))
+}
+
+// Info log info message
+func (sl *StdoutLogger) Info(format string, v ...interface{}) {
+	fmt.Printf("GHOST [INFO] %s\n", fmt.Sprintf(format, v...))
+}
+
+// Debug log debug message
+func (sl *StdoutLogger) Debug(format string, v ...interface{}) {
+	fmt.Printf("GHOST [DEBUG] %s\n", fmt.Sprintf(format, v...))
+}
+
+// Trace log trace message
+func (sl *StdoutLogger) Trace(format string, v ...interface{}) {
+	fmt.Printf("GHOST [TRACE] %s\n", fmt.Sprintf(format, v...))
+}
+
+// RTPWriter interface  which is implemented by video and audio tracks
 type RTPWriter interface {
 	WriteRTP(p *rtp.Packet) error
 }
 
+// ConnectedHandler called when connection succeeded. Providing tracks to write to.
 type ConnectedHandler func(connected bool, localVideoTrack RTPWriter, localAudioTrack RTPWriter)
 
+// TerminatedHandler handle function call when call is terminated
 type TerminatedHandler func()
 
+// DataChannelReceivedHandler delegate for the data channel
 type DataChannelReceivedHandler func(data []byte)
 
+// EyesonClient call interface
 type EyesonClient interface {
 	Call() error
 	TerminateCall() error
@@ -44,6 +77,7 @@ type ClientConfigInterface interface {
 	GetDisplayname() string
 }
 
+// Client implements the EyesonClient call interface
 type Client struct {
 	callInfo                   ClientConfigInterface
 	clientID                   string
@@ -55,35 +89,70 @@ type Client struct {
 	sendPong                   bool
 	sendOnly                   bool
 	useH264Codec               bool
+	useConfProtocol            bool
+	sendMessagesViaSEPP        bool
 	connectedHandler           ConnectedHandler
 	terminatedHandler          TerminatedHandler
 	dataChannelReceivedHandler DataChannelReceivedHandler
+	logger                     gosepp.Logger
 }
 
+// ClientOption following options pattern to specify options
+// for the client.
 type ClientOption func(*Client)
 
+// WithSendOnly signals the only outbound (client->server)
+// traffic is wanted
 func WithSendOnly() ClientOption {
 	return func(h *Client) {
 		h.sendOnly = true
 	}
 }
 
+// WithForceH264Codec forces the h264 codec.
 func WithForceH264Codec() ClientOption {
 	return func(h *Client) {
 		h.useH264Codec = true
 	}
 }
 
+// WithNoConfProtocol deactivates the confserver
+// protocol. So no additional infos will be sent.
+func WithNoConfProtocol() ClientOption {
+	return func(h *Client) {
+		h.useConfProtocol = false
+	}
+}
+
+// WithNoSFUSupport configures that no SFU
+// support should be used.
+func WithNoSFUSupport() ClientOption {
+	return func(h *Client) {
+		h.sfuCapable = false
+	}
+}
+
+// WithCustomLogger configures a custom logger.
+func WithCustomLogger(logger gosepp.Logger) ClientOption {
+	return func(h *Client) {
+		h.logger = logger
+	}
+}
+
 // NewClient creates a new ghost client.
 func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClient, error) {
+
 	cl := &Client{
-		callInfo:     callInfo,
-		clientID:     callInfo.GetClientID(),
-		confID:       callInfo.GetConfID(),
-		sfuCapable:   true,
-		sendPong:     true,
-		sendOnly:     false,
-		useH264Codec: false,
+		callInfo:            callInfo,
+		clientID:            callInfo.GetClientID(),
+		confID:              callInfo.GetConfID(),
+		sfuCapable:          true,
+		sendPong:            true,
+		sendOnly:            false,
+		useH264Codec:        false,
+		useConfProtocol:     true,
+		sendMessagesViaSEPP: true,
+		logger:              &StdoutLogger{},
 	}
 
 	for _, opt := range opts {
@@ -142,7 +211,7 @@ func (cl *Client) Call() error {
 
 	if err := cl.peerConnection.SetRemoteDescription(
 		webrtc.SessionDescription{SDP: sdpAnswer.Sdp, Type: webrtc.SDPTypeAnswer}); err != nil {
-		log.Printf("Failed to set remote description: %s.\n", err)
+		cl.logger.Warn("Failed to set remote description: %s.\n", err)
 	}
 
 	return err
@@ -154,14 +223,14 @@ func (cl *Client) TerminateCall() error {
 }
 
 func (cl *Client) initSig() error {
-	call, err := gosepp.NewCall(cl.callInfo)
+	call, err := gosepp.NewCall(cl.callInfo, cl.logger)
 	if err != nil {
 		return err
 	}
 	cl.call = call
 
 	call.SetSDPUpdateHandler(func(sdp gosepp.Sdp) {
-		onSdpUpdate(call, cl.peerConnection, sdp)
+		onSdpUpdate(call, cl.peerConnection, sdp, cl.logger)
 	})
 
 	call.SetTerminatedHandler(func() {
@@ -196,7 +265,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 		RTPCodecCapability: videoCaps,
 		PayloadType:        96,
 	}, webrtc.RTPCodecTypeVideo); err != nil {
-		log.Fatalf("Failed to register codec: %s", err)
+		return err
 	}
 
 	opusCaps := webrtc.RTPCodecCapability{MimeType: "audio/opus", ClockRate: 48000,
@@ -206,7 +275,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 		RTPCodecCapability: opusCaps,
 		PayloadType:        111,
 	}, webrtc.RTPCodecTypeAudio); err != nil {
-		log.Fatalf("Failed to register codec: %s", err)
+		return err
 	}
 
 	// Create the API object with the MediaEngine
@@ -261,7 +330,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+		cl.logger.Info("ICE Connection State has changed: %s\n", connectionState.String())
 		switch connectionState {
 		case webrtc.ICEConnectionStateConnected:
 			if cl.connectedHandler != nil {
@@ -289,7 +358,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 						errSend := peerConnection.WriteRTCP(
 							[]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}})
 						if errSend != nil {
-							log.Println("Failed to send PLI. Stopping")
+							//log.Println("Failed to send PLI. Stopping")
 							return
 						}
 					}
@@ -328,7 +397,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 
 			b := base{}
 			if err := json.Unmarshal(msg.Data, &b); err != nil {
-				log.Printf("ERR: Failed to unmarshal: %s\n", err)
+				cl.logger.Warn("Failed to unmarshal: %s\n", err)
 			}
 			if b.MsgType == "ping" {
 				//fmt.Println("Ping received")
@@ -380,10 +449,19 @@ func (cl *Client) createOffer() (string, error) {
 		}
 	}
 
-	// add session attribute `eyeson-datachan-capable` and `eyeson-datachan-keepalive`
-	firstMLineIdx := strings.Index(newOffer, "m=")
-	if firstMLineIdx >= 0 {
-		newOffer = newOffer[:firstMLineIdx] + "a=eyeson-datachan-capable\r\na=eyeson-datachan-keepalive\r\n" + newOffer[firstMLineIdx:]
+	if cl.useConfProtocol {
+		// add session attribute `eyeson-datachan-capable` and `eyeson-datachan-keepalive`
+		firstMLineIdx := strings.Index(newOffer, "m=")
+		if firstMLineIdx >= 0 {
+			sAttribs := []string{
+				"a=eyeson-datachan-capable",
+				"a=eyeson-datachan-keepalive",
+			}
+			if cl.sendMessagesViaSEPP {
+				sAttribs = append(sAttribs, "a=eyeson-sepp-messaging")
+			}
+			newOffer = newOffer[:firstMLineIdx] + strings.Join(sAttribs, "\r\n") + "\r\n" + newOffer[firstMLineIdx:]
+		}
 	}
 
 	if cl.sendOnly {
@@ -394,7 +472,8 @@ func (cl *Client) createOffer() (string, error) {
 	return newOffer, nil
 }
 
-func onSdpUpdate(call *gosepp.Call, pc *webrtc.PeerConnection, sdp gosepp.Sdp) {
+func onSdpUpdate(call *gosepp.Call, pc *webrtc.PeerConnection, sdp gosepp.Sdp,
+	logger gosepp.Logger) {
 	switch sdp.SdpType {
 	case "offer":
 		offer := webrtc.SessionDescription{
@@ -404,27 +483,27 @@ func onSdpUpdate(call *gosepp.Call, pc *webrtc.PeerConnection, sdp gosepp.Sdp) {
 
 		err := pc.SetRemoteDescription(offer)
 		if err != nil {
-			log.Printf("Failed to set remote description: %s", err)
+			logger.Warn("Failed to set remote description: %s", err)
 			return
 		}
 
 		// create Answer
 		answer, err := pc.CreateAnswer(nil)
 		if err != nil {
-			log.Printf("Failed to create answer: %s", err)
+			logger.Warn("Failed to create answer: %s", err)
 			return
 		}
 
 		// Sets the LocalDescription, and starts our UDP listeners
 		err = pc.SetLocalDescription(answer)
 		if err != nil {
-			log.Printf("Failed to set local description: %s", err)
+			logger.Warn("Failed to set local description: %s", err)
 			return
 		}
 
 		if err = call.UpdateSDP(context.Background(),
 			gosepp.Sdp{SdpType: "answer", Sdp: answer.SDP}); err != nil {
-			log.Println("failed to send message:", err)
+			logger.Warn("failed to send message:", err)
 			return
 		}
 	}
