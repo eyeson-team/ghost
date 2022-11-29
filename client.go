@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eyeson-team/gosepp/v3"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
@@ -278,8 +279,15 @@ func (cl *Client) initStack(useH264Codec bool) error {
 		return err
 	}
 
+	interceptReg := &interceptor.Registry{}
+	err := webrtc.ConfigureRTCPReports(interceptReg)
+	if err != nil {
+		return err
+	}
+
 	// Create the API object with the MediaEngine
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(&m))
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(&m),
+		webrtc.WithInterceptorRegistry(interceptReg))
 
 	// Prepare the configuration
 	config := webrtc.Configuration{
