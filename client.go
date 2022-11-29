@@ -373,6 +373,17 @@ func (cl *Client) initStack(useH264Codec bool) error {
 				}
 			}()
 		}
+
+		// Read from that track. If this is not done,
+		// no remote data is processed and hence no rtcp info
+		// would be updated. So read even if the data is not handeled.
+		for {
+			_, _, err := track.ReadRTP()
+			if err != nil {
+				return
+			}
+		}
+
 	})
 
 	var dataChannel *webrtc.DataChannel
