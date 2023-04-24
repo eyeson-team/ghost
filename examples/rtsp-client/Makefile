@@ -10,17 +10,15 @@ build-cgo:
 	#CGO_ENABLED=0 go build -mod=vendor  -a -installsuffix cgo -o bin/rtsp-client *.go
 
 
-.PHONY: platforms
-platforms:
-	CGO_ENABLED=0 gox -output="bin/{{.OS}}_{{.Arch}}/rtsp-client_{{.OS}}_{{.Arch}}" \
-							-ldflags="-w -s" \
-							-osarch="linux/amd64 linux/arm linux/arm64 darwin/amd64 darwin/arm64 windows/amd64" rtsp-client
-	upx bin/*/rtsp-client_*
-
-# Note, that an image go-builder is required which contains
-# gox and upx.
-.PHONY: platforms-via-container
-platforms-via-container:
-	podman run --rm -it -v `pwd`/.:/build:z go-builder sh -c "cd /build &&  make platforms"
-
+.PHONY: build-platforms
+build-platforms:
+	# build mac without upx on arm64 cause it would crash
+	# using ldflags "-s -w" to remove debug info
+	# using upx to compress the binary
+	OOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o bin/rtsp-client_darwin_arm64 rtsp-client
+	OOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtsp-client_darwin_amd64 rtsp-client && upx --best --lzma bin/rtsp-client_darwin_amd64
+	OOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtsp-client_linux_amd64 rtsp-client && upx --best --lzma bin/rtsp-client_linux_amd64
+	OOS=linux GOARCH=arm go build -ldflags="-s -w" -o bin/rtsp-client_linux_arm rtsp-client && upx --best --lzma bin/rtsp-client_linux_arm
+	OOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o bin/rtsp-client_linux_arm64 rtsp-client && upx --best --lzma bin/rtsp-client_linux_arm64
+	OOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtsp-client_windows_amd64 rtsp-client && upx --best --lzma bin/rtsp-client_windows_amd64
 

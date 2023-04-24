@@ -6,17 +6,18 @@ default: build
 build:
 	@go build -o bin/rtmp-server rtmp-server
 
-.PHONY: platforms
-platforms:
-	CGO_ENABLED=0 gox -output="bin/{{.OS}}_{{.Arch}}/rtmp-server_{{.OS}}_{{.Arch}}" \
-							-ldflags="-w -s" \
-							-osarch="linux/amd64 linux/arm linux/arm64 darwin/amd64 darwin/arm64 windows/amd64" \
-							rtmp-server
-	upx bin/*/rtmp-server_*
+.PHONY: build-platforms
+build-platforms:
+	# build mac without upx on arm64 cause it would crash
+	# using ldflags "-s -w" to remove debug info
+	# using upx to compress the binary
+	OOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o bin/rtmp-server_darwin_arm64 rtmp-server
+	OOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtmp-server_darwin_amd64 rtmp-server && upx --best --lzma bin/rtmp-server_darwin_amd64
+	OOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtmp-server_linux_amd64 rtmp-server && upx --best --lzma bin/rtmp-server_linux_amd64
+	OOS=linux GOARCH=arm go build -ldflags="-s -w" -o bin/rtmp-server_linux_arm rtmp-server && upx --best --lzma bin/rtmp-server_linux_arm
+	OOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o bin/rtmp-server_linux_arm64 rtmp-server && upx --best --lzma bin/rtmp-server_linux_arm64
+	OOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o bin/rtmp-server_windows_amd64 rtmp-server && upx --best --lzma bin/rtmp-server_windows_amd64
 
-# Note, that an image go-builder is required which contains
-# gox and upx.
-.PHONY: platforms-via-container
-platforms-via-container:
-	podman run --rm -it -v `pwd`/.:/build:z go-builder sh -c "cd /build &&  make platforms"
 
+build-alpine:
+	CGO_ENABLED=0 go build -a -installsuffix cgo -o bin/rtmp-server rtmp-server
