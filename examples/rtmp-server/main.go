@@ -29,6 +29,7 @@ var (
 	rtmpListenAddrFlag   string
 	verboseFlag          bool
 	jitterQueueLenMSFlag int32
+	customCAFileFlag     string
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
@@ -53,47 +54,57 @@ func main() {
 	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://0.0.0.0:1935", "rtmp address this server shall listen to")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 	rootCommand.Flags().Int32VarP(&jitterQueueLenMSFlag, "delay", "", 150, "delay in ms")
+	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 
 	rootCommand.Execute()
 }
 
 // Get a room depending on the provided api-key or guestlink.
-func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyeson.UserService, error) {
+func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string) (*eyeson.UserService, error) {
+	clientOptions := []eyeson.ClientOption{}
+	if len(customCA) > 0 {
+		clientOptions = append(clientOptions, eyeson.WithCustomCAFile(customCA))
+	}
+
 	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
 		// join as guest
-
 		// guest-link: https://app.eyeson.team/?guest=h7IHRfwnV6Yuk3QtL2jbktuh
 		guestPos := strings.LastIndex(apiKeyOrGuestlink, "guest=")
 		if guestPos == -1 {
 			return nil, fmt.Errorf("Invalid guest-link")
 		}
 		guestToken := apiKeyOrGuestlink[guestPos+len("guest="):]
-
-		client := eyeson.NewClient("")
+		client, err := eyeson.NewClient("", clientOptions...)
+		if err != nil {
+			return nil, err
+		}
 		baseURL, _ := url.Parse(apiEndpoint)
 		client.BaseURL = baseURL
 		return client.Rooms.GuestJoin(guestToken, userID, user, "")
-
-	} else {
-		// let's assume we have an apiKey, so fire up a new meeting
-		client := eyeson.NewClient(apiKeyOrGuestlink)
-		baseURL, _ := url.Parse(apiEndpoint)
-		client.BaseURL = baseURL
-		options := map[string]string{}
-		if len(userID) > 0 {
-			options["user[id]"] = userID
-		}
-		return client.Rooms.Join(roomID, user, options)
 	}
+
+	// let's assume we have an apiKey, so fire up a new meeting
+	client, err := eyeson.NewClient(apiKeyOrGuestlink, clientOptions...)
+	if err != nil {
+		return nil, err
+	}
+	baseURL, _ := url.Parse(apiEndpoint)
+	client.BaseURL = baseURL
+	options := map[string]string{}
+	if len(userID) > 0 {
+		options["user[id]"] = userID
+	}
+	return client.Rooms.Join(roomID, user, options)
 }
 
 func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 	rtmpListenAddr, userID string) {
 
-	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID)
+	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID,
+		customCAFileFlag)
 	if err != nil {
-		log.Println("Failed to get room")
+		log.Printf("Failed to get room: %s\n", err)
 		return
 	}
 	log.Println("Waiting for room to become ready")
@@ -105,9 +116,15 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 	log.Println("Guest-link:", room.Data.Links.GuestJoin)
 	log.Println("GUI-link:", room.Data.Links.Gui)
 
-	eyesonClient, err := ghost.NewClient(room.Data,
+	clientOptions := []ghost.ClientOption{
 		ghost.WithForceH264Codec(),
-		ghost.WithSendOnly())
+		ghost.WithSendOnly(),
+	}
+	if len(customCAFileFlag) > 0 {
+		clientOptions = append(clientOptions, ghost.WithCustomCAFile(customCAFileFlag))
+	}
+
+	eyesonClient, err := ghost.NewClient(room.Data, clientOptions...)
 	if err != nil {
 		log.Fatalf("Failed to create eyeson-client %s", err)
 	}
@@ -211,7 +228,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					// is connected.
 					codec, err := rtmph264.FromDecoderConfig(packet.Data)
 					if err != nil {
-						log.Fatalf("Failed to decode decoder-config:", err)
+						log.Fatalf("Failed to decode decoder-config: %s", err)
 					}
 
 					if len(codec.SPS) > 0 {
@@ -227,7 +244,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					// extract nalus from that bitstream
 					nalus, err := h264.DecodeAVCC(packet.Data)
 					if err != nil {
-						log.Fatalf("Failed to decode packet:", err)
+						log.Fatalf("Failed to decode packet: %s", err)
 					}
 
 					// only prepend keyframes with sps and pps
