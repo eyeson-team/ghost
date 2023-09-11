@@ -96,6 +96,7 @@ type Client struct {
 	terminatedHandler          TerminatedHandler
 	dataChannelReceivedHandler DataChannelReceivedHandler
 	logger                     gosepp.Logger
+	goseppOptions              []gosepp.CallOption
 }
 
 // ClientOption following options pattern to specify options
@@ -140,6 +141,15 @@ func WithCustomLogger(logger gosepp.Logger) ClientOption {
 	}
 }
 
+// WithCustomCAFile specify a custom CA file name which is used instead of
+// the system CA pool.
+func WithCustomCAFile(customCAFile string) ClientOption {
+	return func(h *Client) {
+		// just create gosepp Options. See initSig how they are used.
+		h.goseppOptions = append(h.goseppOptions, gosepp.WithCustomCAFile(customCAFile))
+	}
+}
+
 // NewClient creates a new ghost client.
 func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClient, error) {
 
@@ -154,6 +164,7 @@ func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClie
 		useConfProtocol:     true,
 		sendMessagesViaSEPP: true,
 		logger:              &StdoutLogger{},
+		goseppOptions:       []gosepp.CallOption{},
 	}
 
 	for _, opt := range opts {
@@ -224,7 +235,7 @@ func (cl *Client) TerminateCall() error {
 }
 
 func (cl *Client) initSig() error {
-	call, err := gosepp.NewCall(cl.callInfo, cl.logger)
+	call, err := gosepp.NewCall(cl.callInfo, cl.logger, cl.goseppOptions...)
 	if err != nil {
 		return err
 	}
