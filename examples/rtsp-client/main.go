@@ -62,22 +62,27 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 		}
 		guestToken := apiKeyOrGuestlink[guestPos+len("guest="):]
 
-		client := eyeson.NewClient("")
+		client, err := eyeson.NewClient("")
+		if err != nil {
+			return nil, err
+		}
 		baseURL, _ := url.Parse(apiEndpoint)
 		client.BaseURL = baseURL
 		return client.Rooms.GuestJoin(guestToken, userID, user, "")
 
-	} else {
-		// let's assume we have an apiKey, so fire up a new meeting
-		client := eyeson.NewClient(apiKeyOrGuestlink)
-		baseURL, _ := url.Parse(apiEndpoint)
-		client.BaseURL = baseURL
-		options := map[string]string{}
-		if len(userID) > 0 {
-			options["user[id]"] = userID
-		}
-		return client.Rooms.Join(roomID, user, options)
 	}
+	// let's assume we have an apiKey, so fire up a new meeting
+	client, err := eyeson.NewClient(apiKeyOrGuestlink)
+	if err != nil {
+		return nil, err
+	}
+	baseURL, _ := url.Parse(apiEndpoint)
+	client.BaseURL = baseURL
+	options := map[string]string{}
+	if len(userID) > 0 {
+		options["user[id]"] = userID
+	}
+	return client.Rooms.Join(roomID, user, options)
 }
 
 func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
