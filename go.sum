@@ -1,8 +1,8 @@
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/eyeson-team/gosepp/v3 v3.2.0 h1:cZt9HFhsnb4MvFMvdMYOpBCz5roPu0W19U5pxbsmu+c=
-github.com/eyeson-team/gosepp/v3 v3.2.0/go.mod h1:xERJ8rzdetDglpdZUYDEzSSKPaRmsajawGaxcJ8mfug=
+github.com/eyeson-team/gosepp/v3 v3.3.1 h1:yq+8ekfsKnSsQKL3OXbZG5fd6ru+uTpviqKNGgjkyYo=
+github.com/eyeson-team/gosepp/v3 v3.3.1/go.mod h1:xERJ8rzdetDglpdZUYDEzSSKPaRmsajawGaxcJ8mfug=
 github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
 github.com/fsnotify/fsnotify v1.4.9/go.mod h1:znqG4EE+3YCdAaPaxE2ZRY/06pZUdp0tY4IgpuI1SZQ=
 github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0/go.mod h1:fyg7847qk6SyHyPtNmDHnmrv/HOrqktSC+C9fM+CJOE=
