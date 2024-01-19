@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/aler9/gortsplib v0.0.0-20220401100817-6c6c6c68c9b4
 	github.com/eyeson-team/eyeson-go v1.2.4
-	github.com/eyeson-team/ghost/v2 v2.4.2
+	github.com/eyeson-team/ghost/v2 v2.4.3
 	github.com/notedit/rtmp v0.0.2
 	github.com/pion/rtp v1.8.1
 	github.com/spf13/cobra v1.3.0
@@ -13,7 +13,7 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/eyeson-team/gosepp/v3 v3.2.0 // indirect
+	github.com/eyeson-team/gosepp/v3 v3.3.1 // indirect
 	github.com/google/uuid v1.3.1 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect

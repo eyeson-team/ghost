@@ -10,7 +10,7 @@ build:
 build-platforms:
 	# build mac without upx on arm64 cause it would crash
 	bash build.sh build darwin arm64
-	bash build.sh build_n_pack darwin amd64
+	bash build.sh build darwin amd64
 	bash build.sh build_n_pack windows amd64
 	bash build.sh build_n_pack linux amd64
 	bash build.sh build_n_pack linux arm
