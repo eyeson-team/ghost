@@ -14,6 +14,9 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
+// PlatformVersion identifies this libs version
+const PlatformVersion string = "gosepp-2.4.4"
+
 // StdoutLogger simple logger logging everything to stdout
 type StdoutLogger struct{}
 
@@ -235,6 +238,11 @@ func (cl *Client) TerminateCall() error {
 }
 
 func (cl *Client) initSig() error {
+
+	// append the platform version
+
+	cl.goseppOptions = append(cl.goseppOptions, gosepp.WithPlatformVersion(PlatformVersion))
+
 	call, err := gosepp.NewCall(cl.callInfo, cl.logger, cl.goseppOptions...)
 	if err != nil {
 		return err
