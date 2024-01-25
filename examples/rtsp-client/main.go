@@ -24,6 +24,7 @@ var (
 	userIDFlag      string
 	roomIDFlag      string
 	verboseFlag     bool
+	widescreenFlag  bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
@@ -45,6 +46,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&userIDFlag, "user-id", "", "", "User id to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
+	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 
 	rootCommand.Execute()
 }
@@ -81,6 +83,9 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 	options := map[string]string{}
 	if len(userID) > 0 {
 		options["user[id]"] = userID
+	}
+	if widescreenFlag {
+		options["options[widescreen]"] = "true"
 	}
 	return client.Rooms.Join(roomID, user, options)
 }

@@ -30,6 +30,7 @@ var (
 	verboseFlag          bool
 	jitterQueueLenMSFlag int32
 	customCAFileFlag     string
+	widescreenFlag       bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
@@ -55,6 +56,7 @@ func main() {
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 	rootCommand.Flags().Int32VarP(&jitterQueueLenMSFlag, "delay", "", 150, "delay in ms")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
+	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 
 	rootCommand.Execute()
 }
@@ -94,6 +96,9 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 	options := map[string]string{}
 	if len(userID) > 0 {
 		options["user[id]"] = userID
+	}
+	if widescreenFlag {
+		options["options[widescreen]"] = "true"
 	}
 	return client.Rooms.Join(roomID, user, options)
 }
