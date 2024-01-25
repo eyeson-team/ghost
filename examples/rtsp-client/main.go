@@ -290,8 +290,8 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 					log.Printf("Failed to unmarshal to v1-packet")
 				}
 
-				log.Printf("Final ts: %d seq: %d len: %d mark: %v", pktv1.Timestamp, pktv1.SequenceNumber,
-					len(pktv1.Payload), pktv1.Marker)
+				//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pktv1.Timestamp, pktv1.SequenceNumber,
+				//	len(pktv1.Payload), pktv1.Marker)
 
 				err = videoTrack.WriteRTP(&pktv1)
 				if err != nil {
