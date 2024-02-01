@@ -25,6 +25,7 @@ var (
 	roomIDFlag      string
 	verboseFlag     bool
 	widescreenFlag  bool
+	passThroughFlag bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
@@ -47,6 +48,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
+	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 
 	rootCommand.Execute()
 }
@@ -207,14 +209,13 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		sps := h264track.SPS()
 		pps := h264track.PPS()
 
-		if sps == nil || pps == nil {
-			log.Printf("SPS or PPS not present")
-			rtspTerminated <- true
-			return
+		if !passThroughFlag {
+			if sps == nil || pps == nil {
+				log.Printf("SPS or PPS not present")
+				rtspTerminated <- true
+				return
+			}
 		}
-
-		log.Println("SPS:", len(sps))
-		log.Println("PPS:", len(pps))
 
 		h264Encoder := rtph264.Encoder{
 			PayloadType:    96,
@@ -250,29 +251,31 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 				return
 			}
 
-			if len(nalus) != 1 {
-				log.Printf("Warning: Tested only with Decode returning 1 nalu at a time.")
-			}
+			if !passThroughFlag {
+				if len(nalus) != 1 {
+					log.Printf("Warning: Tested only with Decode returning 1 nalu at a time.")
+				}
 
-			typ := rtsph264.NALUType(nalus[0][0] & 0x1F)
-			//log.Println("typ:", typ.String())
-			switch typ {
-			case rtsph264.NALUTypeSPS:
-				// ignore new SPS. Take it from the track-info.
-				return
-			case rtsph264.NALUTypePPS:
-				// ignore new PPS. Take it from the track-info.
-				return
-			case rtsph264.NALUTypeIDR:
-				// prepend keyframe with SPS and PPS
-				nalus = append([][]byte{pps}, nalus...)
-				nalus = append([][]byte{sps}, nalus...)
-				firstKeyFrame = true
-			}
+				typ := rtsph264.NALUType(nalus[0][0] & 0x1F)
+				//log.Println("typ:", typ.String())
+				switch typ {
+				case rtsph264.NALUTypeSPS:
+					// ignore new SPS. Take it from the track-info.
+					return
+				case rtsph264.NALUTypePPS:
+					// ignore new PPS. Take it from the track-info.
+					return
+				case rtsph264.NALUTypeIDR:
+					// prepend keyframe with SPS and PPS
+					nalus = append([][]byte{pps}, nalus...)
+					nalus = append([][]byte{sps}, nalus...)
+					firstKeyFrame = true
+				}
 
-			// wait for first key-frame
-			if !firstKeyFrame {
-				return
+				// wait for first key-frame
+				if !firstKeyFrame {
+					return
+				}
 			}
 
 			// convert nalus to rtp-packets
