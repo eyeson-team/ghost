@@ -21,6 +21,10 @@ are connected it will shutdown after a short period of time. A common way to do
 so is to join with a participant using the web interface and mute your audio
 and video.
 
+## Reader Interface
+
+The rtp-packet stream is made available on the interface.
+
 ## Development
 
 ```sh

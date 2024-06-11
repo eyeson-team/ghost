@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 )
 
 // PlatformVersion identifies this libs version
-const PlatformVersion string = "gosepp-2.4.4"
+const PlatformVersion string = "gosepp-2.5.0"
 
 // StdoutLogger simple logger logging everything to stdout
 type StdoutLogger struct{}
@@ -53,6 +54,9 @@ type RTPWriter interface {
 // ConnectedHandler called when connection succeeded. Providing tracks to write to.
 type ConnectedHandler func(connected bool, localVideoTrack RTPWriter, localAudioTrack RTPWriter)
 
+// MediaReceivedHandler called when a new rtp-Packet is available.
+type MediaReceivedHandler func(rtpPacket *rtp.Packet)
+
 // TerminatedHandler handle function call when call is terminated
 type TerminatedHandler func()
 
@@ -67,6 +71,8 @@ type EyesonClient interface {
 	SetConnectedHandler(ConnectedHandler)
 	SetTerminatedHandler(TerminatedHandler)
 	SetDataChannelHandler(DataChannelReceivedHandler)
+	SetAudioReceivedHandler(MediaReceivedHandler)
+	SetVideoReceivedHandler(MediaReceivedHandler)
 }
 
 // ClientConfigInterface extends the gosepp CallInfoInterface with methods to
@@ -93,11 +99,14 @@ type Client struct {
 	sendPong                   bool
 	sendOnly                   bool
 	useH264Codec               bool
+	useAV1Codec                bool
 	useConfProtocol            bool
 	sendMessagesViaSEPP        bool
 	connectedHandler           ConnectedHandler
 	terminatedHandler          TerminatedHandler
 	dataChannelReceivedHandler DataChannelReceivedHandler
+	videoReceivedHandler       MediaReceivedHandler
+	audioReceivedHandler       MediaReceivedHandler
 	logger                     gosepp.Logger
 	goseppOptions              []gosepp.CallOption
 }
@@ -118,6 +127,13 @@ func WithSendOnly() ClientOption {
 func WithForceH264Codec() ClientOption {
 	return func(h *Client) {
 		h.useH264Codec = true
+	}
+}
+
+// WithForceAV1Codec forces the h264 codec.
+func WithForceAV1Codec() ClientOption {
+	return func(h *Client) {
+		h.useAV1Codec = true
 	}
 }
 
@@ -174,7 +190,14 @@ func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClie
 		opt(cl)
 	}
 
-	if err := cl.initStack(cl.useH264Codec); err != nil {
+	videoCodecMimeType := webrtc.MimeTypeVP8
+	if cl.useH264Codec {
+		videoCodecMimeType = webrtc.MimeTypeH264
+	} else if cl.useAV1Codec {
+		videoCodecMimeType = webrtc.MimeTypeAV1
+	}
+
+	if err := cl.initStack(videoCodecMimeType); err != nil {
 		return nil, err
 	}
 	if err := cl.initSig(); err != nil {
@@ -208,6 +231,16 @@ func (cl *Client) SetTerminatedHandler(handler TerminatedHandler) {
 // SetDataChannelHandler forwards data received via data-channel.
 func (cl *Client) SetDataChannelHandler(handler DataChannelReceivedHandler) {
 	cl.dataChannelReceivedHandler = handler
+}
+
+// SetAudioReceivedHandler forwards media rtp packets.
+func (cl *Client) SetAudioReceivedHandler(handler MediaReceivedHandler) {
+	cl.audioReceivedHandler = handler
+}
+
+// SetVideoReceivedHandler forwards media rtp packets.
+func (cl *Client) SetVideoReceivedHandler(handler MediaReceivedHandler) {
+	cl.videoReceivedHandler = handler
 }
 
 // Call initiates a connection.
@@ -262,7 +295,7 @@ func (cl *Client) initSig() error {
 	return nil
 }
 
-func (cl *Client) initStack(useH264Codec bool) error {
+func (cl *Client) initStack(videoCodecMimeType string) error {
 
 	// Create a MediaEngine object to configure the supported codec
 	m := webrtc.MediaEngine{}
@@ -273,12 +306,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 		webrtc.RTCPFeedback{Type: "goog-remb"},
 	}
 
-	videoMimeType := webrtc.MimeTypeVP8
-	if useH264Codec {
-		videoMimeType = webrtc.MimeTypeH264
-	}
-
-	videoCaps := webrtc.RTPCodecCapability{MimeType: videoMimeType, ClockRate: 90000,
+	videoCaps := webrtc.RTPCodecCapability{MimeType: videoCodecMimeType, ClockRate: 90000,
 		Channels: 0, SDPFmtpLine: "", RTCPFeedback: vCodecFBs}
 
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
@@ -333,7 +361,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 	})
 
 	videoTrack, videoTrackErr := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{MimeType: videoMimeType}, "video", "pion")
+		webrtc.RTPCodecCapability{MimeType: videoCodecMimeType}, "video", "pion")
 	if videoTrackErr != nil {
 		return videoTrackErr
 	}
@@ -367,8 +395,8 @@ func (cl *Client) initStack(useH264Codec bool) error {
 	})
 
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		//fmt.Printf("onTrack: new track: id: %s mid: %s rid: %s codec: %s\n", track.ID(),
-		//  track.Msid(), track.RID(), track.Codec().MimeType)
+		cl.logger.Debug("onTrack: new track: id: %s mid: %s rid: %s codec: %s", track.ID(),
+			track.Msid(), track.RID(), track.Codec().MimeType)
 
 		// Without sending something over, the NO-DATA-RECEIVED will be triggered
 		// serverside (although this should not, cause STUN-binding messages should trigger
@@ -388,6 +416,7 @@ func (cl *Client) initStack(useH264Codec bool) error {
 							//log.Println("Failed to send PLI. Stopping")
 							return
 						}
+						log.Println("PLI sent")
 					}
 				}
 			}()
@@ -397,9 +426,20 @@ func (cl *Client) initStack(useH264Codec bool) error {
 		// no remote data is processed and hence no rtcp info
 		// would be updated. So read even if the data is not handeled.
 		for {
-			_, _, err := track.ReadRTP()
+			rtpPacket, _, err := track.ReadRTP()
 			if err != nil {
 				return
+			}
+			if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) ||
+				strings.EqualFold(codec.MimeType, webrtc.MimeTypeVP8) ||
+				strings.EqualFold(codec.MimeType, webrtc.MimeTypeAV1) {
+				if cl.videoReceivedHandler != nil {
+					cl.videoReceivedHandler(rtpPacket)
+				}
+			} else {
+				if cl.audioReceivedHandler != nil {
+					cl.audioReceivedHandler(rtpPacket)
+				}
 			}
 		}
 
