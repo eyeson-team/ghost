@@ -268,7 +268,9 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					}
 
 					for _, pkt := range pkts {
-						log.Printf("ts: %d\n", pkt.Header.Timestamp)
+						pkt.Header.Timestamp = uint32(packet.Time.Seconds() * 90000)
+						log.Printf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp, pkt.SequenceNumber,
+							len(pkt.Payload), pkt.Marker)
 						err = videoJB.WriteRTP(pkt)
 						if err != nil {
 							log.Printf("Failed to write h264 sample: %s", err)
