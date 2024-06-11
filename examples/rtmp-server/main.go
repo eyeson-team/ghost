@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aler9/gortsplib/pkg/h264"
-	"github.com/aler9/gortsplib/pkg/rtph264"
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
+	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
 	"github.com/eyeson-team/eyeson-go"
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/notedit/rtmp/av"
@@ -224,6 +224,8 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					return
 				}
 
+				log.Printf("DBG: Packet ts from rtmp: %s", packet.Time)
+
 				switch packet.Type {
 				case av.H264DecoderConfig:
 					// read SPS and PPS and save them so those can be
@@ -247,9 +249,10 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 
 					// rtmp h264 packet uses AVCC bit-stream
 					// extract nalus from that bitstream
-					nalus, err := h264.DecodeAVCC(packet.Data)
+					nalus, err := h264.AVCCUnmarshal(packet.Data)
 					if err != nil {
-						log.Fatalf("Failed to decode packet: %s", err)
+						log.Printf("Failed to decode packet: %s\n", err)
+						continue
 					}
 
 					// only prepend keyframes with sps and pps
@@ -259,12 +262,13 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					}
 
 					// convert nalus to rtp-packets
-					pkts, err := h264Encoder.Encode(nalus, packet.Time)
+					pkts, err := h264Encoder.Encode(nalus) //, packet.Time)
 					if err != nil {
 						log.Fatalf("error while encoding H264: %v", err)
 					}
 
 					for _, pkt := range pkts {
+						log.Printf("ts: %d\n", pkt.Header.Timestamp)
 						err = videoJB.WriteRTP(pkt)
 						if err != nil {
 							log.Printf("Failed to write h264 sample: %s", err)
