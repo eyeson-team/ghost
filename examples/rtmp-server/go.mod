@@ -3,12 +3,13 @@ module rtmp-server
 go 1.22
 
 require (
-	github.com/bluenviron/gortsplib/v4 v4.10.0
-	github.com/bluenviron/mediacommon v1.11.0
+	github.com/bluenviron/gortsplib/v4 v4.10.1
+	github.com/bluenviron/mediacommon v1.12.0
 	github.com/eyeson-team/eyeson-go v1.3.0
 	github.com/eyeson-team/ghost/v2 v2.4.4
 	github.com/notedit/rtmp v0.0.2
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
+	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.0
 )
 
@@ -20,6 +21,8 @@ require (
 	github.com/gorilla/websocket v1.5.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pion/datachannel v1.5.6 // indirect
 	github.com/pion/dtls/v2 v2.2.11 // indirect
 	github.com/pion/ice/v2 v2.3.25 // indirect
@@ -34,7 +37,7 @@ require (
 	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/transport/v2 v2.2.5 // indirect
 	github.com/pion/turn/v2 v2.1.6 // indirect
-	github.com/pion/webrtc/v3 v3.2.41 // indirect
+	github.com/pion/webrtc/v3 v3.2.42 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect

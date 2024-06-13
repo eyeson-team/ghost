@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -259,7 +258,7 @@ func (cl *Client) Call() error {
 
 	if err := cl.peerConnection.SetRemoteDescription(
 		webrtc.SessionDescription{SDP: sdpAnswer.Sdp, Type: webrtc.SDPTypeAnswer}); err != nil {
-		cl.logger.Warn("Failed to set remote description: %s.\n", err)
+		cl.logger.Warn("Failed to set remote description: %s.", err)
 	}
 
 	return err
@@ -385,7 +384,7 @@ func (cl *Client) initStack(videoCodecMimeType string) error {
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		cl.logger.Info("ICE Connection State has changed: %s\n", connectionState.String())
+		cl.logger.Info("ICE Connection State has changed: %s", connectionState.String())
 		switch connectionState {
 		case webrtc.ICEConnectionStateConnected:
 			if cl.connectedHandler != nil {
@@ -416,7 +415,6 @@ func (cl *Client) initStack(videoCodecMimeType string) error {
 							//log.Println("Failed to send PLI. Stopping")
 							return
 						}
-						log.Println("PLI sent")
 					}
 				}
 			}()
@@ -475,7 +473,7 @@ func (cl *Client) initStack(videoCodecMimeType string) error {
 
 			b := base{}
 			if err := json.Unmarshal(msg.Data, &b); err != nil {
-				cl.logger.Warn("Failed to unmarshal: %s\n", err)
+				cl.logger.Warn("Failed to unmarshal: %s", err)
 			}
 			if b.MsgType == "ping" {
 				//fmt.Println("Ping received")

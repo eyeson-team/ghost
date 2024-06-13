@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"os"
@@ -14,10 +13,12 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
 	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
 	"github.com/eyeson-team/eyeson-go"
-	ghost "github.com/eyeson-team/ghost/v2"
+	"github.com/eyeson-team/ghost/v2"
 	"github.com/notedit/rtmp/av"
 	rtmph264 "github.com/notedit/rtmp/codec/h264"
 	"github.com/notedit/rtmp/format/rtmp"
+	"github.com/rs/zerolog"
+	log "github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -28,9 +29,11 @@ var (
 	roomIDFlag           string
 	rtmpListenAddrFlag   string
 	verboseFlag          bool
+	traceFlag            bool
 	jitterQueueLenMSFlag int32
 	customCAFileFlag     string
 	widescreenFlag       bool
+	quietFlag            bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
@@ -47,13 +50,62 @@ var (
 	}
 )
 
+type Logger struct{}
+
+// Error log error msg
+func (sl *Logger) Error(format string, v ...interface{}) {
+	log.Error().Msgf(format, v...)
+}
+
+// Warn log warn message
+func (sl *Logger) Warn(format string, v ...interface{}) {
+	log.Warn().Msgf(format, v...)
+}
+
+// Info log info message
+func (sl *Logger) Info(format string, v ...interface{}) {
+	log.Info().Msgf(format, v...)
+}
+
+// Debug log debug message
+func (sl *Logger) Debug(format string, v ...interface{}) {
+	log.Debug().Msgf(format, v...)
+}
+
+// Trace log trace message
+func (sl *Logger) Trace(format string, v ...interface{}) {
+	log.Trace().Msgf(format, v...)
+}
+
+func initLogging() {
+	switch {
+	case verboseFlag:
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case traceFlag:
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	case quietFlag:
+		zerolog.SetGlobalLevel(zerolog.Disabled)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+}
+
 func main() {
+	log.Logger = log.Output(
+		zerolog.ConsoleWriter{
+			Out: os.Stderr, TimeFormat: "15:04:05.000"})
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	cobra.OnInitialize(initLogging)
+
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtmp-test", "User name to use")
 	rootCommand.Flags().StringVarP(&userIDFlag, "user-id", "", "", "User id to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().StringVarP(&rtmpListenAddrFlag, "rtmp-listen-addr", "", "rtmp://0.0.0.0:1935", "rtmp address this server shall listen to")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
+	rootCommand.Flags().BoolVarP(&traceFlag, "trace", "", false, "trace output")
+	rootCommand.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "no logging output")
 	rootCommand.Flags().Int32VarP(&jitterQueueLenMSFlag, "delay", "", 150, "delay in ms")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
@@ -109,19 +161,20 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID,
 		customCAFileFlag)
 	if err != nil {
-		log.Printf("Failed to get room: %s\n", err)
+		log.Printf("Failed to get room: %s", err)
 		return
 	}
-	log.Println("Waiting for room to become ready")
+	log.Printf("Waiting for room to become ready")
 	err = room.WaitReady()
 	if err != nil {
-		log.Fatalf("Failed: %s", err)
+		log.Fatal().Err(err).Msg("Failed")
 	}
 
-	log.Println("Guest-link:", room.Data.Links.GuestJoin)
-	log.Println("GUI-link:", room.Data.Links.Gui)
+	log.Printf("Guest-link: %s", room.Data.Links.GuestJoin)
+	log.Printf("GUI-link: %s", room.Data.Links.Gui)
 
 	clientOptions := []ghost.ClientOption{
+		ghost.WithCustomLogger(&Logger{}),
 		ghost.WithForceH264Codec(),
 		ghost.WithSendOnly(),
 	}
@@ -131,31 +184,31 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 
 	eyesonClient, err := ghost.NewClient(room.Data, clientOptions...)
 	if err != nil {
-		log.Fatalf("Failed to create eyeson-client %s", err)
+		log.Error().Err(err).Msg("Failed to create eyeson-client")
 	}
 	defer eyesonClient.Destroy()
 
 	eyesonClient.SetTerminatedHandler(func() {
-		log.Println("Call terminated")
+		log.Print("Call terminated")
 		os.Exit(0)
 	})
 
 	if verboseFlag {
 		eyesonClient.SetDataChannelHandler(func(data []byte) {
-			log.Printf("DC message: %s\n", string(data))
+			log.Printf("DC message: %s", string(data))
 		})
 	}
 
 	rtmpTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
-		log.Println("Webrtc connected. Starting rtmp-server")
+		log.Print("Webrtc connected. Starting rtmp-server")
 		setupRtmpServer(localVideoTrack, rtmpListenAddr, rtmpTerminatedCh)
 
 	})
 
 	if err := eyesonClient.Call(); err != nil {
-		log.Println("Failed to call:", err)
+		log.Error().Err(err).Msg("Failed to call")
 		return
 	}
 
@@ -171,7 +224,7 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 		break
 	}
 
-	log.Println("RTMP connection is done. So terminating this call")
+	log.Printf("RTMP connection is done. So terminating this call")
 	// terminate this call
 	eyesonClient.TerminateCall()
 }
@@ -193,7 +246,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			return
 		}
 
-		log.Println("RTMP server listening: ", listenAddr)
+		log.Info().Msgf("RTMP server listening: %s", listenAddr)
 
 		// Init the rtph264-rtp-header-encoder only once,
 		// and reuse if another rtmp-client connects.
@@ -204,7 +257,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 		h264Encoder.Init()
 
 		rtmpServer.HandleConn = func(c *rtmp.Conn, nc net.Conn) {
-			log.Println("New rtmp-conn created")
+			log.Debug().Msg("New rtmp-conn created")
 
 			sps := []byte{}
 			pps := []byte{}
@@ -212,7 +265,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			videoJB, err := NewVideoJitterBuffer(videoTrack,
 				time.Duration(jitterQueueLenMSFlag)*time.Millisecond)
 			if err != nil {
-				log.Fatalf("Failed to setup vjb: %s", err)
+				log.Fatal().Err(err).Msg("Failed to setup vjb")
 			}
 			defer videoJB.Close()
 
@@ -222,7 +275,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			for {
 				packet, err := c.ReadPacket()
 				if err != nil {
-					log.Println("Failed to read packet:", err)
+					log.Info().Err(err).Msg("Failed to read packet")
 					//rtmpTerminated <- true
 					return
 				}
@@ -238,7 +291,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					// is connected.
 					codec, err := rtmph264.FromDecoderConfig(packet.Data)
 					if err != nil {
-						log.Fatalf("Failed to decode decoder-config: %s", err)
+						log.Fatal().Err(err).Msg("Failed to decode decoder-config")
 					}
 
 					if len(codec.SPS) > 0 {
@@ -261,8 +314,8 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 
 						for _, pkt := range pkts {
 							pkt.Header.Timestamp = currentTS
-							//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp, pkt.SequenceNumber,
-							//	len(pkt.Payload), pkt.Marker)
+							log.Trace().Msgf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp,
+								pkt.SequenceNumber, len(pkt.Payload), pkt.Marker)
 							err = videoJB.WriteRTP(pkt)
 							if err != nil {
 								log.Printf("Failed to write h264 sample: %s", err)
@@ -278,7 +331,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					// extract nalus from that bitstream
 					nalus, err := h264.AVCCUnmarshal(packet.Data)
 					if err != nil {
-						log.Printf("Failed to decode packet: %s\n", err)
+						log.Printf("Failed to decode packet: %s", err)
 						continue
 					}
 
@@ -317,7 +370,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 				time.Sleep(time.Second)
 				continue
 			}
-			log.Println("New Client connected")
+			log.Debug().Msg("New Client connected")
 			rtmpServer.HandleNetConn(nc)
 		}
 

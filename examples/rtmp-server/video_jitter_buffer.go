@@ -1,10 +1,10 @@
 package main
 
 import (
-	"log"
 	"time"
 
 	"github.com/pion/rtp"
+	log "github.com/rs/zerolog/log"
 )
 
 type WebrtcSender interface {
@@ -36,7 +36,7 @@ func (vjb *VideoJitterBuffer) WriteRTP(p *rtp.Packet) error {
 
 func jitterLoop(packetsCh <-chan *rtp.Packet, sender WebrtcSender,
 	queueLen time.Duration) {
-	defer log.Println("jitterLoop done")
+	defer log.Printf("jitterLoop done")
 	worker := time.NewTicker(10 * time.Millisecond)
 	defer worker.Stop()
 
@@ -59,7 +59,7 @@ func jitterLoop(packetsCh <-chan *rtp.Packet, sender WebrtcSender,
 				back := queue[len(queue)-1]
 				var tsDiff int64 = int64(back.Timestamp - front.Timestamp)
 				if tsDiff < 0 {
-					log.Println("Timestamp wrap -> flush queue")
+					log.Printf("Timestamp wrap -> flush queue")
 					queue = []*rtp.Packet{}
 					break
 				}
@@ -72,7 +72,7 @@ func jitterLoop(packetsCh <-chan *rtp.Packet, sender WebrtcSender,
 
 				err := sender.WriteRTP(front)
 				if err != nil {
-					log.Println("Failed to send rtp-packte:", err)
+					log.Info().Err(err).Msg("Failed to send rtp-packte")
 					return
 				}
 				queue = queue[1:]
