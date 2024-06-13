@@ -216,6 +216,9 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 			}
 			defer videoJB.Close()
 
+			var currentTS uint32 = 0
+			naluBuffer := [][]byte{}
+
 			for {
 				packet, err := c.ReadPacket()
 				if err != nil {
@@ -224,7 +227,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					return
 				}
 
-				log.Printf("DBG: Packet ts from rtmp: %s", packet.Time)
+				//log.Printf("DBG: Packet ts from rtmp: %s", packet.Time)
 
 				switch packet.Type {
 				case av.H264DecoderConfig:
@@ -246,6 +249,30 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					}
 
 				case av.H264:
+					newTS := uint32(packet.Time.Seconds() * 90000)
+					if newTS != currentTS {
+						// write all buffers to webrtc
+						// convert nalus to rtp-packets
+						pkts, err := h264Encoder.Encode(naluBuffer)
+						if err != nil {
+							log.Printf("error while encoding H264: %v", err)
+							continue
+						}
+
+						for _, pkt := range pkts {
+							pkt.Header.Timestamp = currentTS
+							//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp, pkt.SequenceNumber,
+							//	len(pkt.Payload), pkt.Marker)
+							err = videoJB.WriteRTP(pkt)
+							if err != nil {
+								log.Printf("Failed to write h264 sample: %s", err)
+								return
+							}
+						}
+						// clear
+						naluBuffer = [][]byte{}
+						currentTS = newTS
+					}
 
 					// rtmp h264 packet uses AVCC bit-stream
 					// extract nalus from that bitstream
@@ -255,28 +282,31 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 						continue
 					}
 
+					debugNALUTypes := false
+					if debugNALUTypes {
+						for _, n := range nalus {
+							naluType := h264.NALUType(n[0] & 0x1F)
+							log.Printf("nalu-type: %v-%s", naluType, naluType.String())
+						}
+					}
+
+					// Check, if there is only one NALU with an SEI.
+					// If so, skip it. Those SEI-packets lead to
+					// depackaging/decoding issues and seem not to be relevant.
+					if len(nalus) == 1 {
+						naluType := h264.NALUType(nalus[0][0] & 0x1F)
+						if naluType == h264.NALUTypeSEI {
+							//log.Printf("skipping nalu-type SEI")
+							continue
+						}
+					}
+
 					// only prepend keyframes with sps and pps
 					if packet.IsKeyFrame {
 						nalus = append(nalus, sps)
 						nalus = append(nalus, pps)
 					}
-
-					// convert nalus to rtp-packets
-					pkts, err := h264Encoder.Encode(nalus) //, packet.Time)
-					if err != nil {
-						log.Fatalf("error while encoding H264: %v", err)
-					}
-
-					for _, pkt := range pkts {
-						pkt.Header.Timestamp = uint32(packet.Time.Seconds() * 90000)
-						log.Printf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp, pkt.SequenceNumber,
-							len(pkt.Payload), pkt.Marker)
-						err = videoJB.WriteRTP(pkt)
-						if err != nil {
-							log.Printf("Failed to write h264 sample: %s", err)
-							return
-						}
-					}
+					naluBuffer = append(naluBuffer, nalus...)
 				}
 			}
 		}
