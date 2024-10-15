@@ -58,21 +58,26 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
 		// join as guest
-
 		// guest-link: https://app.eyeson.team/?guest=h7IHRfwnV6Yuk3QtL2jbktuh
-		guestPos := strings.LastIndex(apiKeyOrGuestlink, "guest=")
-		if guestPos == -1 {
+		u, err := url.Parse(apiKeyOrGuestlink)
+		if err != nil {
 			return nil, fmt.Errorf("Invalid guest-link")
 		}
-		guestToken := apiKeyOrGuestlink[guestPos+len("guest="):]
-
+		params, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			return nil, fmt.Errorf("Invalid guest-link")
+		}
+		guestToken, ok := params["guest"]
+		if !ok || len(guestToken) != 1 {
+			return nil, fmt.Errorf("Invalid guest-link")
+		}
 		client, err := eyeson.NewClient("")
 		if err != nil {
 			return nil, err
 		}
 		baseURL, _ := url.Parse(apiEndpoint)
 		client.BaseURL = baseURL
-		return client.Rooms.GuestJoin(guestToken, userID, user, "")
+		return client.Rooms.GuestJoin(guestToken[0], userID, user, "")
 
 	}
 	// let's assume we have an apiKey, so fire up a new meeting
