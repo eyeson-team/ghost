@@ -30,8 +30,7 @@ In order to have an RTSP-Server for testing use vlc to make a webcam
 available via RTSP:
 
 ```sh
-vlc v4l2:///dev/video0 --sout '#transcode{vcodec=h264,acodec=mpga,ab=128,channels=2,samplerate=44100,scodec=none}:rtp{sdp=rtsp://:8554/stream}' \
---sout-x264-bframes=0 --sout-x264-keyint=2
+vlc v4l2:///dev/video0 --sout '#transcode{vcodec=h264{bframes=0},acodec=mpga,ab=128,channels=2,samplerate=44100,scodec=none}:rtp{sdp=rtsp://:8554/stream}'
 ```
 
 

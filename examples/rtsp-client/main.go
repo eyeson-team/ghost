@@ -7,14 +7,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/aler9/gortsplib"
-	"github.com/aler9/gortsplib/pkg/base"
-	rtsph264 "github.com/aler9/gortsplib/pkg/h264"
-	"github.com/aler9/gortsplib/pkg/rtph264"
+	"github.com/bluenviron/gortsplib/v4"
+	"github.com/bluenviron/gortsplib/v4/pkg/base"
+	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
+
+	rtsph264 "github.com/bluenviron/mediacommon/pkg/codecs/h264"
 	"github.com/eyeson-team/eyeson-go"
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/pion/rtp"
-	rtpv2 "github.com/pion/rtp/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -167,7 +168,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// Make ReadBufferSize large enough to fit whole keyframes.
 		// Some IP-Cams rely on ip-fragmentation which results
 		// in large UDP packets.
-		c := gortsplib.Client{ReadBufferSize: 2 << 20}
+		c := gortsplib.Client{} //ReadBufferSize: 2 << 20}
 		// parse URL
 		u, err := base.ParseURL(rtspConnectURL)
 		if err != nil {
@@ -186,33 +187,26 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		defer c.Close()
 
 		// find published tracks
-		tracks, baseURL, _, err := c.Describe(u)
+		session, baseURL, err := c.Describe(u)
 		if err != nil {
 			log.Printf("Connecting to rtsp server failed with %s.", err)
 			rtspTerminated <- true
 			return
 		}
 
-		log.Println("tracks:", tracks)
 		log.Println("baseurl:", baseURL)
 
-		// find the H264 track
-		h264TrackID, h264track := func() (int, *gortsplib.TrackH264) {
-			for i, track := range tracks {
-				if h264track, ok := track.(*gortsplib.TrackH264); ok {
-					return i, h264track
-				}
-			}
-			return -1, nil
-		}()
-		if h264TrackID < 0 {
-			log.Printf("No h264 track found")
+		var fh264 *format.H264
+		mediaH264 := session.FindFormat(&fh264)
+
+		if mediaH264 == nil {
+			log.Printf("No h264 media found")
 			rtspTerminated <- true
 			return
 		}
 
-		sps := h264track.SPS()
-		pps := h264track.PPS()
+		sps := fh264.SPS
+		pps := fh264.PPS
 
 		if !passThroughFlag {
 			if sps == nil || pps == nil {
@@ -232,15 +226,19 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		rtpDec := &rtph264.Decoder{}
 		rtpDec.Init()
 
+		// setup a single media
+		_, err = c.Setup(session.BaseURL, mediaH264, 0, 0)
+		if err != nil {
+			log.Printf("Failed to start rtsp: %s", err)
+			rtspTerminated <- true
+			return
+		}
+
 		var lastRTPts uint32
 
 		firstKeyFrame := false
 
-		c.OnPacketRTP = func(trackID int, pkt *rtpv2.Packet) {
-
-			if trackID != h264TrackID {
-				return
-			}
+		onRTPPacket := func(pkt *rtp.Packet) {
 
 			if lastRTPts != 0 {
 				if pkt.Timestamp < lastRTPts {
@@ -250,7 +248,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			lastRTPts = pkt.Timestamp
 
 			// decode H264 NALUs from the RTP packet
-			nalus, ptsDur, err := rtpDec.Decode(pkt)
+			nalus, err := rtpDec.Decode(pkt)
 			if err != nil {
 				//log.Printf("Decode failed: %s", err)
 				return
@@ -261,20 +259,16 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 					log.Printf("Warning: Tested only with Decode returning 1 nalu at a time.")
 				}
 
-				typ := rtsph264.NALUType(nalus[0][0] & 0x1F)
-				//log.Println("typ:", typ.String())
-				switch typ {
-				case rtsph264.NALUTypeSPS:
-					// ignore new SPS. Take it from the track-info.
-					return
-				case rtsph264.NALUTypePPS:
-					// ignore new PPS. Take it from the track-info.
-					return
-				case rtsph264.NALUTypeIDR:
-					// prepend keyframe with SPS and PPS
-					nalus = append([][]byte{pps}, nalus...)
-					nalus = append([][]byte{sps}, nalus...)
-					firstKeyFrame = true
+				for _, nalu := range nalus {
+					typ := rtsph264.NALUType(nalu[0] & 0x1F)
+					//log.Printf("type %s:\n", typ.String())
+					switch typ {
+					case rtsph264.NALUTypeIDR:
+						// prepend keyframe with SPS and PP
+						nalus = append([][]byte{pps}, nalus...)
+						nalus = append([][]byte{sps}, nalus...)
+						firstKeyFrame = true
+					}
 				}
 
 				// wait for first key-frame
@@ -284,29 +278,16 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			}
 
 			// convert nalus to rtp-packets
-			pkts, err := h264Encoder.Encode(nalus, ptsDur)
+			pkts, err := h264Encoder.Encode(nalus)
 			if err != nil {
 				log.Fatalf("error while encoding H264: %v", err)
 			}
 
-			//log.Printf("Created %d packets", len(pkts))
-
 			for _, pkt := range pkts {
-				// convert rtpv2 to rtpv1
-				b, err := pkt.Marshal()
-				if err != nil {
-					log.Printf("Failed to marshal v2-packet")
-				}
-				var pktv1 rtp.Packet
-				err = pktv1.Unmarshal(b)
-				if err != nil {
-					log.Printf("Failed to unmarshal to v1-packet")
-				}
-
 				//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pktv1.Timestamp, pktv1.SequenceNumber,
 				//	len(pktv1.Payload), pktv1.Marker)
-
-				err = videoTrack.WriteRTP(&pktv1)
+				pkt.Timestamp = lastRTPts
+				err = videoTrack.WriteRTP(pkt)
 				if err != nil {
 					log.Printf("Failed to write h264 sample: %s", err)
 					return
@@ -315,7 +296,9 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		}
 
-		err = c.SetupAndPlay(tracks, baseURL)
+		c.OnPacketRTP(mediaH264, fh264, onRTPPacket)
+
+		_, err = c.Play(nil)
 		if err != nil {
 			log.Printf("Failed to start rtsp: %s", err)
 			rtspTerminated <- true
