@@ -168,17 +168,17 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID,
 		customCAFileFlag)
 	if err != nil {
-		log.Printf("Failed to get room: %s", err)
+		log.Error().Err(err).Msg("Failed to get room")
 		return
 	}
-	log.Printf("Waiting for room to become ready")
+	log.Debug().Msg("Waiting for room to become ready")
 	err = room.WaitReady()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed")
 	}
 
-	log.Printf("Guest-link: %s", room.Data.Links.GuestJoin)
-	log.Printf("GUI-link: %s", room.Data.Links.Gui)
+	log.Info().Msgf("Guest-link: %s", room.Data.Links.GuestJoin)
+	log.Info().Msgf("GUI-link: %s", room.Data.Links.Gui)
 
 	clientOptions := []ghost.ClientOption{
 		ghost.WithCustomLogger(&Logger{}),
@@ -196,20 +196,20 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 	defer eyesonClient.Destroy()
 
 	eyesonClient.SetTerminatedHandler(func() {
-		log.Print("Call terminated")
+		log.Info().Msg("Call terminated")
 		os.Exit(0)
 	})
 
 	if verboseFlag {
 		eyesonClient.SetDataChannelHandler(func(data []byte) {
-			log.Printf("DC message: %s", string(data))
+			log.Debug().Msgf("DC message: %s", string(data))
 		})
 	}
 
 	rtmpTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
-		log.Print("Webrtc connected. Starting rtmp-server")
+		log.Debug().Msg("Webrtc connected. Starting rtmp-server")
 		setupRtmpServer(localVideoTrack, rtmpListenAddr, rtmpTerminatedCh)
 
 	})
@@ -231,7 +231,7 @@ func rtmpServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID,
 		break
 	}
 
-	log.Printf("RTMP connection is done. So terminating this call")
+	log.Info().Msg("RTMP connection is done. So terminating this call")
 	// terminate this call
 	eyesonClient.TerminateCall()
 }
@@ -315,7 +315,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 						// convert nalus to rtp-packets
 						pkts, err := h264Encoder.Encode(naluBuffer)
 						if err != nil {
-							log.Printf("error while encoding H264: %v", err)
+							log.Error().Err(err).Msg("error while encoding H264")
 							continue
 						}
 
@@ -325,7 +325,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 								pkt.SequenceNumber, len(pkt.Payload), pkt.Marker)
 							err = videoJB.WriteRTP(pkt)
 							if err != nil {
-								log.Printf("Failed to write h264 sample: %s", err)
+								log.Error().Err(err).Msg("Failed to write h264 sample")
 								return
 							}
 						}
@@ -338,7 +338,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					// extract nalus from that bitstream
 					nalus, err := h264.AVCCUnmarshal(packet.Data)
 					if err != nil {
-						log.Printf("Failed to decode packet: %s", err)
+						log.Error().Err(err).Msg("Failed to decode packet")
 						continue
 					}
 
@@ -346,7 +346,7 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 					if debugNALUTypes {
 						for _, n := range nalus {
 							naluType := h264.NALUType(n[0] & 0x1F)
-							log.Printf("nalu-type: %v-%s", naluType, naluType.String())
+							log.Debug().Msgf("nalu-type: %v-%s", naluType, naluType.String())
 						}
 					}
 
