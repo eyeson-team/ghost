@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/bluenviron/gortsplib/v4"
 	"github.com/bluenviron/gortsplib/v4/pkg/base"
@@ -147,8 +149,14 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 		return
 	}
 
+	// install signal-handler
+	chStop := make(chan os.Signal, 1)
+	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
+
 	// Block until rtsp-connection is done
 	select {
+	case <-chStop:
+		break
 	case <-rtspTerminatedCh:
 		break
 	}
