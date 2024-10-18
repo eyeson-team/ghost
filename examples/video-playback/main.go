@@ -32,8 +32,8 @@ var (
 	loopFlag         bool
 
 	rootCommand = &cobra.Command{
-		Use:   "video-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE",
-		Short: "video-player",
+		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE",
+		Short: "ghost-player",
 		Args:  cobra.MinimumNArgs(2),
 		PreRun: func(cmd *cobra.Command, args []string) {
 
@@ -208,6 +208,7 @@ func ingestControl(videoFile string, localVideoTrack ghost.RTPWriter, loop bool)
 		if !loop {
 			break
 		}
+		log.Info().Msg("Restarting video playback")
 	}
 }
 
@@ -236,7 +237,8 @@ func ingestVideo(videoFile string, localVideoTrack ghost.RTPWriter) error {
 	}
 	// todo: handle codec selection
 	//fmt.Printf("Video-Codec: %v - %v\n", videoTrack.CodecName, videoTrack.CodecID)
-
+	log.Debug().Msgf("Webm duration is %v", ctx.Segment.GetDuration())
+	log.Debug().Msgf("Webm video codec is %v", videoTrack.CodecID)
 	started := time.Now()
 
 	for {
@@ -342,7 +344,7 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 		break
 	}
 
-	log.Info().Msg("RTMP connection is done. So terminating this call")
+	log.Info().Msg("Stopping. So terminating this call")
 	// terminate this call
 	eyesonClient.TerminateCall()
 }

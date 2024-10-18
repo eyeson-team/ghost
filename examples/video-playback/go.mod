@@ -1,4 +1,4 @@
-module video-player
+module ghost-player
 
 go 1.22
 
