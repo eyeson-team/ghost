@@ -36,7 +36,7 @@ func (vjb *VideoJitterBuffer) WriteRTP(p *rtp.Packet) error {
 
 func jitterLoop(packetsCh <-chan *rtp.Packet, sender WebrtcSender,
 	queueLen time.Duration) {
-	defer log.Printf("jitterLoop done")
+	defer log.Debug().Msg("jitterLoop done")
 	worker := time.NewTicker(10 * time.Millisecond)
 	defer worker.Stop()
 
@@ -59,7 +59,7 @@ func jitterLoop(packetsCh <-chan *rtp.Packet, sender WebrtcSender,
 				back := queue[len(queue)-1]
 				var tsDiff int64 = int64(back.Timestamp - front.Timestamp)
 				if tsDiff < 0 {
-					log.Printf("Timestamp wrap -> flush queue")
+					log.Debug().Msg("Timestamp wrap -> flush queue")
 					queue = []*rtp.Packet{}
 					break
 				}

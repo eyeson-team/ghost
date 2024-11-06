@@ -378,8 +378,9 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 				time.Sleep(time.Second)
 				continue
 			}
-			log.Debug().Msg("New Client connected")
+			log.Info().Str("address", nc.RemoteAddr().String()).Msg("Client connected")
 			rtmpServer.HandleNetConn(nc)
+			log.Info().Str("address", nc.RemoteAddr().String()).Msg("Client disconnected")
 		}
 
 	}()
