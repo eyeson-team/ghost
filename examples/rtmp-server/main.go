@@ -250,6 +250,8 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 		var err error
 		var lis net.Listener
 		if lis, err = net.Listen("tcp", host); err != nil {
+			log.Error().Err(err).Msgf("Failed to start RTMP server")
+			rtmpTerminated <- true
 			return
 		}
 
@@ -283,7 +285,6 @@ func setupRtmpServer(videoTrack ghost.RTPWriter, listenAddr string, rtmpTerminat
 				packet, err := c.ReadPacket()
 				if err != nil {
 					log.Info().Err(err).Msg("Failed to read packet")
-					//rtmpTerminated <- true
 					return
 				}
 
