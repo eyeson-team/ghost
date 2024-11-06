@@ -8,5 +8,6 @@ require (
 	github.com/eyeson-team/eyeson-go v1.2.4
 	github.com/eyeson-team/ghost/v2 v2.4.4
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
+	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.3.0
 )

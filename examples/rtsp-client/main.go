@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"github.com/rs/zerolog"
+	log "github.com/rs/zerolog/log"
 
 	"github.com/bluenviron/gortsplib/v4"
 	"github.com/bluenviron/gortsplib/v4/pkg/base"
@@ -29,6 +31,8 @@ var (
 	verboseFlag     bool
 	widescreenFlag  bool
 	passThroughFlag bool
+	traceFlag       bool
+	quietFlag       bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
@@ -44,12 +48,61 @@ var (
 	}
 )
 
+type Logger struct{}
+
+// Error log error msg
+func (sl *Logger) Error(format string, v ...interface{}) {
+	log.Error().Msgf(format, v...)
+}
+
+// Warn log warn message
+func (sl *Logger) Warn(format string, v ...interface{}) {
+	log.Warn().Msgf(format, v...)
+}
+
+// Info log info message
+func (sl *Logger) Info(format string, v ...interface{}) {
+	log.Info().Msgf(format, v...)
+}
+
+// Debug log debug message
+func (sl *Logger) Debug(format string, v ...interface{}) {
+	log.Debug().Msgf(format, v...)
+}
+
+// Trace log trace message
+func (sl *Logger) Trace(format string, v ...interface{}) {
+	log.Trace().Msgf(format, v...)
+}
+
+func initLogging() {
+	switch {
+	case verboseFlag:
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case traceFlag:
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	case quietFlag:
+		zerolog.SetGlobalLevel(zerolog.Disabled)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+}
+
 func main() {
+	log.Logger = log.Output(
+		zerolog.ConsoleWriter{
+			Out: os.Stderr, TimeFormat: "15:04:05.000"})
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	cobra.OnInitialize(initLogging)
+
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtsp-test", "User name to use")
 	rootCommand.Flags().StringVarP(&userIDFlag, "user-id", "", "", "User id to use")
 	rootCommand.Flags().StringVarP(&roomIDFlag, "room-id", "", "", "Room ID. If left empty, a new meeting will be created on each request")
 	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
+	rootCommand.Flags().BoolVarP(&traceFlag, "trace", "", false, "trace output")
+	rootCommand.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "no logging output")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 
@@ -105,47 +158,47 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID)
 	if err != nil {
-		log.Println("Failed to get room")
+		log.Error().Err(err).Msg("Failed to get room")
 		return
 	}
-	log.Println("Waiting for room to become ready")
+	log.Debug().Msg("Waiting for room to become ready")
 	err = room.WaitReady()
 	if err != nil {
-		log.Fatalf("Failed: %s", err)
+		log.Fatal().Err(err).Msg("Failed")
 	}
 
-	log.Println("Guest-link:", room.Data.Links.GuestJoin)
-	log.Println("GUI-link:", room.Data.Links.Gui)
+	log.Info().Msgf("Guest-link: %s", room.Data.Links.GuestJoin)
+	log.Info().Msgf("GUI-link: %s", room.Data.Links.Gui)
 
 	eyesonClient, err := ghost.NewClient(room.Data,
+		ghost.WithCustomLogger(&Logger{}),
 		ghost.WithForceH264Codec(),
 		ghost.WithSendOnly())
 	if err != nil {
-		log.Fatalf("Failed to create eyeson-client %s", err)
+		log.Error().Err(err).Msg("Failed to create eyeson-client")
 	}
 	defer eyesonClient.Destroy()
 
 	eyesonClient.SetTerminatedHandler(func() {
-		log.Println("Call terminated")
+		log.Info().Msg("Call terminated")
 		os.Exit(0)
 	})
 
 	if verboseFlag {
 		eyesonClient.SetDataChannelHandler(func(data []byte) {
-			log.Printf("DC message: %s\n", string(data))
+			log.Debug().Msgf("DC message: %s", string(data))
 		})
 	}
 
 	rtspTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
-		log.Println("Webrtc connected. Connecting to ", rtspConnectURL)
+		log.Info().Msgf("Webrtc connected. Connecting to %s", rtspConnectURL)
 		setupRtspClient(localVideoTrack, rtspConnectURL, rtspTerminatedCh)
-
 	})
 
 	if err := eyesonClient.Call(); err != nil {
-		log.Println("Failed to call:", err)
+		log.Error().Err(err).Msg("Failed to call")
 		return
 	}
 
@@ -161,7 +214,7 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 		break
 	}
 
-	log.Println("RTSP connection is done. So terminating this call")
+	log.Info().Msg("RTSP connection is done. So terminating this call")
 	// terminate this call
 	eyesonClient.TerminateCall()
 }
@@ -180,7 +233,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// parse URL
 		u, err := base.ParseURL(rtspConnectURL)
 		if err != nil {
-			log.Printf("Parse RTSP-Url failed with %s.", err)
+			log.Error().Err(err).Msg("Parse RTSP-Url failed")
 			rtspTerminated <- true
 			return
 		}
@@ -188,7 +241,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// connect to the server
 		err = c.Start(u.Scheme, u.Host)
 		if err != nil {
-			log.Printf("Connecting to rtsp server failed with %s.", err)
+			log.Error().Err(err).Msg("Connecting to rtsp server failed")
 			rtspTerminated <- true
 			return
 		}
@@ -197,18 +250,18 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// find published tracks
 		session, baseURL, err := c.Describe(u)
 		if err != nil {
-			log.Printf("Connecting to rtsp server failed with %s.", err)
+			log.Error().Err(err).Msg("Connecting to rtsp server failed")
 			rtspTerminated <- true
 			return
 		}
 
-		log.Println("baseurl:", baseURL)
+		log.Debug().Msgf("baseurl:", baseURL)
 
 		var fh264 *format.H264
 		mediaH264 := session.FindFormat(&fh264)
 
 		if mediaH264 == nil {
-			log.Printf("No h264 media found")
+			log.Error().Msg("No h264 media found")
 			rtspTerminated <- true
 			return
 		}
@@ -218,7 +271,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		if !passThroughFlag {
 			if sps == nil || pps == nil {
-				log.Printf("SPS or PPS not present")
+				log.Error().Msg("SPS or PPS not present")
 				rtspTerminated <- true
 				return
 			}
@@ -237,7 +290,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		// setup a single media
 		_, err = c.Setup(session.BaseURL, mediaH264, 0, 0)
 		if err != nil {
-			log.Printf("Failed to start rtsp: %s", err)
+			log.Error().Err(err).Msg("Failed to start rtsp")
 			rtspTerminated <- true
 			return
 		}
@@ -250,7 +303,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 			if lastRTPts != 0 {
 				if pkt.Timestamp < lastRTPts {
-					log.Printf("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
+					log.Info().Msg("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
 				}
 			}
 			lastRTPts = pkt.Timestamp
@@ -264,7 +317,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 			if !passThroughFlag {
 				if len(nalus) != 1 {
-					log.Printf("Warning: Tested only with Decode returning 1 nalu at a time.")
+					log.Warn().Msg("Warning: Tested only with Decode returning 1 nalu at a time.")
 				}
 
 				for _, nalu := range nalus {
@@ -288,7 +341,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			// convert nalus to rtp-packets
 			pkts, err := h264Encoder.Encode(nalus)
 			if err != nil {
-				log.Fatalf("error while encoding H264: %v", err)
+				log.Fatal().Err(err).Msg("error while encoding H264")
 			}
 
 			for _, pkt := range pkts {
@@ -297,7 +350,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 				pkt.Timestamp = lastRTPts
 				err = videoTrack.WriteRTP(pkt)
 				if err != nil {
-					log.Printf("Failed to write h264 sample: %s", err)
+					log.Error().Err(err).Msg("Failed to write h264 sample")
 					return
 				}
 			}
@@ -308,14 +361,14 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		_, err = c.Play(nil)
 		if err != nil {
-			log.Printf("Failed to start rtsp: %s", err)
+			log.Error().Err(err).Msg("Failed to start rtsp")
 			rtspTerminated <- true
 			return
 		}
 
 		// wait until a fatal error
 		if err := c.Wait(); err != nil {
-			log.Printf("RTSP finished with err: %s", err)
+			log.Error().Err(err).Msg("RTSP finished with err")
 		}
 
 		rtspTerminated <- true
