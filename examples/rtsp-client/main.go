@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 
+	standardLog "log"
+
 	"github.com/rs/zerolog"
 	log "github.com/rs/zerolog/log"
 
@@ -75,6 +77,15 @@ func (sl *Logger) Trace(format string, v ...interface{}) {
 	log.Trace().Msgf(format, v...)
 }
 
+// customWriter is an io.Writer that uses zerolog's logger.
+type customLogWriter struct{}
+
+func (cw customLogWriter) Write(p []byte) (n int, err error) {
+	// Use zerolog to log standard log messages
+	log.Debug().Msg(string(p))
+	return len(p), nil
+}
+
 func initLogging() {
 	switch {
 	case verboseFlag:
@@ -86,6 +97,7 @@ func initLogging() {
 	default:
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
+	standardLog.SetOutput(customLogWriter{})
 }
 
 func main() {
@@ -271,7 +283,12 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		if !passThroughFlag {
 			if sps == nil || pps == nil {
-				log.Error().Msg("SPS or PPS not present")
+				if sps == nil {
+					log.Error().Msg("SPS not present")
+				}
+				if pps == nil {
+					log.Error().Msg("PPS not present")
+				}
 				rtspTerminated <- true
 				return
 			}
