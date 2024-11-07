@@ -255,7 +255,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			return
 		}
 
-		log.Debug().Msgf("baseurl:", baseURL)
+		log.Debug().Msgf("baseurl: %s", baseURL)
 
 		var fh264 *format.H264
 		mediaH264 := session.FindFormat(&fh264)
