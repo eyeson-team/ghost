@@ -355,17 +355,15 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 					log.Warn().Msg("Warning: Tested only with Decode returning 1 nalu at a time.")
 				}
 
-				if sps != nil || pps != nil {
-					for _, nalu := range nalus {
-						typ := rtsph264.NALUType(nalu[0] & 0x1F)
-						// log.Debug().Msgf("type %s:", typ.String())
-						switch typ {
-						case rtsph264.NALUTypeIDR:
-							// prepend keyframe with SPS and PP
-							nalus = append([][]byte{pps}, nalus...)
-							nalus = append([][]byte{sps}, nalus...)
-							firstKeyFrame = true
-						}
+				for _, nalu := range nalus {
+					typ := rtsph264.NALUType(nalu[0] & 0x1F)
+					// log.Debug().Msgf("type %s:", typ.String())
+					switch typ {
+					case rtsph264.NALUTypeIDR:
+						// prepend keyframe with SPS and PPS
+						nalus = append([][]byte{pps}, nalus...)
+						nalus = append([][]byte{sps}, nalus...)
+						firstKeyFrame = true
 					}
 				}
 
