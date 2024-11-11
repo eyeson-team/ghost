@@ -231,6 +231,24 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	eyesonClient.TerminateCall()
 }
 
+func forward(nalus [][]byte, encoder *rtph264.Encoder, videoTrack ghost.RTPWriter, rtpTimestamp uint32) error {
+	pkts, err := encoder.Encode(nalus)
+	if err != nil {
+		return fmt.Errorf("error while encoding H264: %v", err)
+	}
+
+	for _, pkt := range pkts {
+		//log.Debug().Msgf("Final ts: %d seq: %d len: %d mark: %v", pkt.Timestamp, pkt.SequenceNumber,
+		//	len(pkt.Payload), pkt.Marker)
+		pkt.Timestamp = rtpTimestamp
+		err = videoTrack.WriteRTP(pkt)
+		if err != nil {
+			return fmt.Errorf("Failed to write h264 sample %v", err)
+		}
+	}
+	return nil
+}
+
 func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 	rtspTerminated chan<- bool) {
 	//
@@ -284,13 +302,11 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		if !passThroughFlag {
 			if sps == nil || pps == nil {
 				if sps == nil {
-					log.Error().Msg("SPS not present")
+					log.Warn().Msg("SPS not present")
 				}
 				if pps == nil {
-					log.Error().Msg("PPS not present")
+					log.Warn().Msg("PPS not present")
 				}
-				rtspTerminated <- true
-				return
 			}
 		}
 
@@ -316,6 +332,9 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 
 		firstKeyFrame := false
 
+		// buffers nalus for the same timestamp (rtpTimestamp)
+		nalusBuffer := [][]byte{}
+
 		onRTPPacket := func(pkt *rtp.Packet) {
 
 			if lastRTPts != 0 {
@@ -323,7 +342,6 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 					log.Info().Msg("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
 				}
 			}
-			lastRTPts = pkt.Timestamp
 
 			// decode H264 NALUs from the RTP packet
 			nalus, err := rtpDec.Decode(pkt)
@@ -337,15 +355,17 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 					log.Warn().Msg("Warning: Tested only with Decode returning 1 nalu at a time.")
 				}
 
-				for _, nalu := range nalus {
-					typ := rtsph264.NALUType(nalu[0] & 0x1F)
-					//log.Printf("type %s:\n", typ.String())
-					switch typ {
-					case rtsph264.NALUTypeIDR:
-						// prepend keyframe with SPS and PP
-						nalus = append([][]byte{pps}, nalus...)
-						nalus = append([][]byte{sps}, nalus...)
-						firstKeyFrame = true
+				if sps != nil || pps != nil {
+					for _, nalu := range nalus {
+						typ := rtsph264.NALUType(nalu[0] & 0x1F)
+						// log.Debug().Msgf("type %s:", typ.String())
+						switch typ {
+						case rtsph264.NALUTypeIDR:
+							// prepend keyframe with SPS and PP
+							nalus = append([][]byte{pps}, nalus...)
+							nalus = append([][]byte{sps}, nalus...)
+							firstKeyFrame = true
+						}
 					}
 				}
 
@@ -355,23 +375,16 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 				}
 			}
 
-			// convert nalus to rtp-packets
-			pkts, err := h264Encoder.Encode(nalus)
-			if err != nil {
-				log.Fatal().Err(err).Msg("error while encoding H264")
-			}
-
-			for _, pkt := range pkts {
-				//log.Printf("Final ts: %d seq: %d len: %d mark: %v", pktv1.Timestamp, pktv1.SequenceNumber,
-				//	len(pktv1.Payload), pktv1.Marker)
-				pkt.Timestamp = lastRTPts
-				err = videoTrack.WriteRTP(pkt)
-				if err != nil {
-					log.Error().Err(err).Msg("Failed to write h264 sample")
+			if lastRTPts != pkt.Timestamp {
+				// last frame is complete, so forward nalus and clear the buffer
+				if err := forward(nalusBuffer, &h264Encoder, videoTrack, lastRTPts); err != nil {
+					log.Error().Err(err).Msg("Failed to forward")
 					return
 				}
+				nalusBuffer = [][]byte{}
 			}
-
+			nalusBuffer = append(nalusBuffer, nalus...)
+			lastRTPts = pkt.Timestamp
 		}
 
 		c.OnPacketRTP(mediaH264, fh264, onRTPPacket)
