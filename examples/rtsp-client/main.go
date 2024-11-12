@@ -351,10 +351,6 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 			}
 
 			if !passThroughFlag {
-				if len(nalus) != 1 {
-					log.Warn().Msg("Warning: Tested only with Decode returning 1 nalu at a time.")
-				}
-
 				for _, nalu := range nalus {
 					typ := rtsph264.NALUType(nalu[0] & 0x1F)
 					// log.Debug().Msgf("type %s:", typ.String())
