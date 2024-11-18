@@ -15,7 +15,7 @@ import (
 )
 
 // PlatformVersion identifies this libs version
-const PlatformVersion string = "gosepp-2.5.0"
+const PlatformVersion string = "gosepp-2.7.0"
 
 // StdoutLogger simple logger logging everything to stdout
 type StdoutLogger struct{}
