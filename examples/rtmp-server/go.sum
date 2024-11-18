@@ -11,8 +11,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/eyeson-team/eyeson-go v1.3.0 h1:wKa9Sa1eM//q5cYE0uJNDNCN7NbwrJOpEDaFJVVtfWU=
 github.com/eyeson-team/eyeson-go v1.3.0/go.mod h1:ruPPbIXNwmfZW9GlunMv2JQACwHchdRICTuBTwA/6Q8=
-github.com/eyeson-team/ghost/v2 v2.5.0 h1:ESuXepAxyqlZpLlTAMnUWTvckZPATpVHN01gnvKm/hM=
-github.com/eyeson-team/ghost/v2 v2.5.0/go.mod h1:BzJNySD77VTZMpRsC0AA7cmjBJdQzpXzsRe1C+nRwEk=
+github.com/eyeson-team/ghost/v2 v2.7.0 h1:zZ7jD0AQqnFo/mkQlX6xECnntgD3qcSgiMJNB4mOxf8=
+github.com/eyeson-team/ghost/v2 v2.7.0/go.mod h1:BzJNySD77VTZMpRsC0AA7cmjBJdQzpXzsRe1C+nRwEk=
 github.com/eyeson-team/gosepp/v3 v3.4.1 h1:nUfh0W+ofIGzeDFI8ATmwy2poQuYeN/NAE2rs/np2Yk=
 github.com/eyeson-team/gosepp/v3 v3.4.1/go.mod h1:xERJ8rzdetDglpdZUYDEzSSKPaRmsajawGaxcJ8mfug=
 github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=

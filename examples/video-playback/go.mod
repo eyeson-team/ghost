@@ -5,7 +5,8 @@ go 1.22
 require (
 	github.com/ebml-go/webm v0.0.0-20221117133942-84fa5245cf70
 	github.com/eyeson-team/eyeson-go v1.3.0
-	github.com/eyeson-team/ghost/v2 v2.5.0
+	github.com/eyeson-team/ghost/v2 v2.7.0
+	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.0
 )
@@ -30,7 +31,6 @@ require (
 	github.com/pion/mdns v0.0.12 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.14 // indirect
-	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0 // indirect
 	github.com/pion/sctp v1.8.16 // indirect
 	github.com/pion/sdp/v3 v3.0.9 // indirect
 	github.com/pion/srtp/v2 v2.0.18 // indirect
