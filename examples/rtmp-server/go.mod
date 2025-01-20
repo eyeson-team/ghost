@@ -5,7 +5,7 @@ go 1.22
 require (
 	github.com/bluenviron/gortsplib/v4 v4.10.1
 	github.com/bluenviron/mediacommon v1.12.0
-	github.com/eyeson-team/eyeson-go v1.3.0
+	github.com/eyeson-team/eyeson-go v1.4.1
 	github.com/eyeson-team/ghost/v2 v2.7.0
 	github.com/notedit/rtmp v0.0.2
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
