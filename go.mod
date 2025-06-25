@@ -3,7 +3,7 @@ module github.com/eyeson-team/ghost/v2
 go 1.16
 
 require (
-	github.com/eyeson-team/gosepp/v3 v3.4.1
+	github.com/eyeson-team/gosepp/v3 v3.4.2-0.20250625152754-7520ae68db73
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/pion/datachannel v1.5.6 // indirect
 	github.com/pion/ice/v2 v2.3.14 // indirect
