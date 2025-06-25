@@ -35,6 +35,7 @@ var (
 	passThroughFlag bool
 	traceFlag       bool
 	quietFlag       bool
+	customCAFileFlag     string
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
@@ -117,12 +118,18 @@ func main() {
 	rootCommand.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "no logging output")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
+	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 
 	rootCommand.Execute()
 }
 
 // Get a room depending on the provided api-key or guestlink.
-func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyeson.UserService, error) {
+func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string) (*eyeson.UserService, error) {
+	clientOptions := []eyeson.ClientOption{}
+	if len(customCA) > 0 {
+		clientOptions = append(clientOptions, eyeson.WithCustomCAFile(customCA))
+	}
+	
 	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
 		// join as guest
@@ -139,7 +146,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 		if !ok || len(guestToken) != 1 {
 			return nil, fmt.Errorf("Invalid guest-link")
 		}
-		client, err := eyeson.NewClient("")
+		client, err := eyeson.NewClient("",clientOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +156,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 
 	}
 	// let's assume we have an apiKey, so fire up a new meeting
-	client, err := eyeson.NewClient(apiKeyOrGuestlink)
+	client, err := eyeson.NewClient(apiKeyOrGuestlink, clientOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +175,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) (*eyes
 func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	roomID, userID string) {
 
-	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID)
+	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCAFileFlag)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get room")
 		return
