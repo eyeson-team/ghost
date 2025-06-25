@@ -5,8 +5,8 @@ go 1.18
 require (
 	github.com/bluenviron/gortsplib/v4 v4.10.1
 	github.com/bluenviron/mediacommon v1.11.1-0.20240525122142-20163863aa75
-	github.com/eyeson-team/eyeson-go v1.4.1
-	github.com/eyeson-team/ghost/v2 v2.7.0
+	github.com/eyeson-team/eyeson-go v1.7.1-0.20250625151357-066c5249b9be
+	github.com/eyeson-team/ghost/v2 v2.7.1-0.20250625154733-bd02ac7b36fb
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.3.0
@@ -15,7 +15,7 @@ require (
 require (
 	github.com/bgentry/actioncable-go v0.0.0-20170309201021-1f2dbd93dbae // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/eyeson-team/gosepp/v3 v3.4.1 // indirect
+	github.com/eyeson-team/gosepp/v3 v3.4.2-0.20250625152754-7520ae68db73 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect

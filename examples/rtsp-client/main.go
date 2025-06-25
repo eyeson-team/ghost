@@ -26,16 +26,17 @@ import (
 )
 
 var (
-	apiEndpointFlag string
-	userFlag        string
-	userIDFlag      string
-	roomIDFlag      string
-	verboseFlag     bool
-	widescreenFlag  bool
-	passThroughFlag bool
-	traceFlag       bool
-	quietFlag       bool
-	customCAFileFlag     string
+	apiEndpointFlag        string
+	userFlag               string
+	userIDFlag             string
+	roomIDFlag             string
+	verboseFlag            bool
+	widescreenFlag         bool
+	passThroughFlag        bool
+	traceFlag              bool
+	quietFlag              bool
+	customCAFileFlag       string
+	insecureSkipVerifyFlag bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
@@ -119,17 +120,21 @@ func main() {
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
+	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
 
 	rootCommand.Execute()
 }
 
 // Get a room depending on the provided api-key or guestlink.
-func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string) (*eyeson.UserService, error) {
+func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string, insecure bool) (*eyeson.UserService, error) {
 	clientOptions := []eyeson.ClientOption{}
 	if len(customCA) > 0 {
 		clientOptions = append(clientOptions, eyeson.WithCustomCAFile(customCA))
 	}
-	
+	if insecure {
+		clientOptions = append(clientOptions, eyeson.WithInsecureSkipVerify())
+	}
+
 	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
 		// join as guest
@@ -146,7 +151,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 		if !ok || len(guestToken) != 1 {
 			return nil, fmt.Errorf("Invalid guest-link")
 		}
-		client, err := eyeson.NewClient("",clientOptions...)
+		client, err := eyeson.NewClient("", clientOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -175,7 +180,8 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	roomID, userID string) {
 
-	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCAFileFlag)
+	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCAFileFlag,
+		insecureSkipVerifyFlag)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get room")
 		return
@@ -196,6 +202,10 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	}
 	if len(customCAFileFlag) > 0 {
 		clientOptions = append(clientOptions, ghost.WithCustomCAFile(customCAFileFlag))
+	}
+
+	if insecureSkipVerifyFlag {
+		clientOptions = append(clientOptions, ghost.WithInsecureSkipVerify())
 	}
 	eyesonClient, err := ghost.NewClient(room.Data, clientOptions...)
 	if err != nil {
