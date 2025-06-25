@@ -189,10 +189,15 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	log.Info().Msgf("Guest-link: %s", room.Data.Links.GuestJoin)
 	log.Info().Msgf("GUI-link: %s", room.Data.Links.Gui)
 
-	eyesonClient, err := ghost.NewClient(room.Data,
+	clientOptions := []ghost.ClientOption{
 		ghost.WithCustomLogger(&Logger{}),
 		ghost.WithForceH264Codec(),
-		ghost.WithSendOnly())
+		ghost.WithSendOnly(),
+	}
+	if len(customCAFileFlag) > 0 {
+		clientOptions = append(clientOptions, ghost.WithCustomCAFile(customCAFileFlag))
+	}
+	eyesonClient, err := ghost.NewClient(room.Data, clientOptions...)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create eyeson-client")
 	}
