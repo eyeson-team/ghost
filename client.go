@@ -168,6 +168,12 @@ func WithCustomCAFile(customCAFile string) ClientOption {
 	}
 }
 
+func WithInsecureSkipVerify() ClientOption {
+	return func(h *Client) {
+		h.goseppOptions = append(h.goseppOptions, gosepp.WithInsecureSkipVerify())
+	}
+}
+
 // NewClient creates a new ghost client.
 func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClient, error) {
 
