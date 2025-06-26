@@ -4,8 +4,8 @@ go 1.22
 
 require (
 	github.com/ebml-go/webm v0.0.0-20221117133942-84fa5245cf70
-	github.com/eyeson-team/eyeson-go v1.4.1
-	github.com/eyeson-team/ghost/v2 v2.7.0
+	github.com/eyeson-team/eyeson-go v1.7.1-0.20250625151357-066c5249b9be
+	github.com/eyeson-team/ghost/v2 v2.7.1-0.20250625155507-cd6ab9dc4366
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.0
@@ -15,7 +15,7 @@ require (
 	github.com/bgentry/actioncable-go v0.0.0-20170309201021-1f2dbd93dbae // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/ebml-go/ebml v0.0.0-20160925193348-ca8851a10894 // indirect
-	github.com/eyeson-team/gosepp/v3 v3.4.1 // indirect
+	github.com/eyeson-team/gosepp/v3 v3.4.2-0.20250625152754-7520ae68db73 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

@@ -20,16 +20,17 @@ import (
 )
 
 var (
-	apiEndpointFlag  string
-	userFlag         string
-	userIDFlag       string
-	roomIDFlag       string
-	verboseFlag      bool
-	traceFlag        bool
-	customCAFileFlag string
-	widescreenFlag   bool
-	quietFlag        bool
-	loopFlag         bool
+	apiEndpointFlag        string
+	userFlag               string
+	userIDFlag             string
+	roomIDFlag             string
+	verboseFlag            bool
+	traceFlag              bool
+	customCAFileFlag       string
+	widescreenFlag         bool
+	quietFlag              bool
+	loopFlag               bool
+	insecureSkipVerifyFlag bool
 
 	rootCommand = &cobra.Command{
 		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE",
@@ -104,6 +105,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&loopFlag, "loop", "", true, "Restart video-playback on EOF")
+	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
 
 	rootCommand.Execute()
 }
@@ -150,10 +152,13 @@ func (rs *rtpSender) send(sampleData []byte) {
 }
 
 // Get a room depending on the provided api-key or guestlink.
-func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string) (*eyeson.UserService, error) {
+func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string, insecure bool) (*eyeson.UserService, error) {
 	clientOptions := []eyeson.ClientOption{}
 	if len(customCA) > 0 {
 		clientOptions = append(clientOptions, eyeson.WithCustomCAFile(customCA))
+	}
+	if insecure {
+		clientOptions = append(clientOptions, eyeson.WithInsecureSkipVerify())
 	}
 
 	// determine if we have a guestlink
@@ -282,7 +287,7 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	file.Close()
 
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID,
-		customCAFileFlag)
+		customCAFileFlag, insecureSkipVerifyFlag)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get room")
 		return
@@ -302,6 +307,9 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	}
 	if len(customCAFileFlag) > 0 {
 		clientOptions = append(clientOptions, ghost.WithCustomCAFile(customCAFileFlag))
+	}
+	if insecureSkipVerifyFlag {
+		clientOptions = append(clientOptions, ghost.WithInsecureSkipVerify())
 	}
 
 	eyesonClient, err := ghost.NewClient(room.Data, clientOptions...)
