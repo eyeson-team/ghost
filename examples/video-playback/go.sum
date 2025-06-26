@@ -17,6 +17,8 @@ github.com/eyeson-team/ghost/v2 v2.7.0 h1:zZ7jD0AQqnFo/mkQlX6xECnntgD3qcSgiMJNB4
 github.com/eyeson-team/ghost/v2 v2.7.0/go.mod h1:BzJNySD77VTZMpRsC0AA7cmjBJdQzpXzsRe1C+nRwEk=
 github.com/eyeson-team/ghost/v2 v2.7.1-0.20250625155507-cd6ab9dc4366 h1:HNiyVg1VoREbKH1cJ9TPNUmUeg0F5Us3pj9m5v70qiQ=
 github.com/eyeson-team/ghost/v2 v2.7.1-0.20250625155507-cd6ab9dc4366/go.mod h1:oz+qR20+1IYGubVNbtka3lL5Kuh5ns8fJtEYhvS3EGU=
+github.com/eyeson-team/ghost/v2 v2.7.1-0.20250626063411-6535290faea3 h1:ENJI+daGqMV4eqAyBWrA8tPhJCPW7K+nV3DgfxASWN4=
+github.com/eyeson-team/ghost/v2 v2.7.1-0.20250626063411-6535290faea3/go.mod h1:oz+qR20+1IYGubVNbtka3lL5Kuh5ns8fJtEYhvS3EGU=
 github.com/eyeson-team/gosepp/v3 v3.4.1 h1:nUfh0W+ofIGzeDFI8ATmwy2poQuYeN/NAE2rs/np2Yk=
 github.com/eyeson-team/gosepp/v3 v3.4.1/go.mod h1:xERJ8rzdetDglpdZUYDEzSSKPaRmsajawGaxcJ8mfug=
 github.com/eyeson-team/gosepp/v3 v3.4.2-0.20250625152754-7520ae68db73 h1:fbsEX56cbMAH7/71wAB0xHvXvgIfXsXSSC/zvnZRJZ8=

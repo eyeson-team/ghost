@@ -5,7 +5,7 @@ go 1.22
 require (
 	github.com/ebml-go/webm v0.0.0-20221117133942-84fa5245cf70
 	github.com/eyeson-team/eyeson-go v1.7.1-0.20250625151357-066c5249b9be
-	github.com/eyeson-team/ghost/v2 v2.7.1-0.20250625155507-cd6ab9dc4366
+	github.com/eyeson-team/ghost/v2 v2.7.1-0.20250626063411-6535290faea3
 	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.0
