@@ -15,7 +15,7 @@ import (
 )
 
 // PlatformVersion identifies this libs version
-const PlatformVersion string = "gosepp-2.7.1"
+const PlatformVersion string = "gosepp-2.8.0"
 
 // StdoutLogger simple logger logging everything to stdout
 type StdoutLogger struct{}
@@ -108,6 +108,7 @@ type Client struct {
 	audioReceivedHandler       MediaReceivedHandler
 	logger                     gosepp.Logger
 	goseppOptions              []gosepp.CallOption
+	videoCodec                 string
 }
 
 // ClientOption following options pattern to specify options
@@ -125,14 +126,35 @@ func WithSendOnly() ClientOption {
 // WithForceH264Codec forces the h264 codec.
 func WithForceH264Codec() ClientOption {
 	return func(h *Client) {
-		h.useH264Codec = true
+		h.videoCodec = webrtc.MimeTypeH264
 	}
 }
 
-// WithForceAV1Codec forces the h264 codec.
+// WithForceAV1Codec forces the av1 codec.
 func WithForceAV1Codec() ClientOption {
 	return func(h *Client) {
-		h.useAV1Codec = true
+		h.videoCodec = webrtc.MimeTypeAV1
+	}
+}
+
+// WithForceH265Codec forces the h265 codec.
+func WithForceH265Codec() ClientOption {
+	return func(h *Client) {
+		h.videoCodec = webrtc.MimeTypeH265
+	}
+}
+
+// WithForceVP9Codec forces the vp9 codec.
+func WithForceVP9Codec() ClientOption {
+	return func(h *Client) {
+		h.videoCodec = webrtc.MimeTypeVP9
+	}
+}
+
+// WithForceVP8Codec forces the vp8 codec.
+func WithForceVP8Codec() ClientOption {
+	return func(h *Client) {
+		h.videoCodec = webrtc.MimeTypeVP8
 	}
 }
 
@@ -184,25 +206,18 @@ func NewClient(callInfo ClientConfigInterface, opts ...ClientOption) (EyesonClie
 		sfuCapable:          true,
 		sendPong:            true,
 		sendOnly:            false,
-		useH264Codec:        false,
 		useConfProtocol:     true,
 		sendMessagesViaSEPP: true,
 		logger:              &StdoutLogger{},
 		goseppOptions:       []gosepp.CallOption{},
+		videoCodec:          webrtc.MimeTypeVP8,
 	}
 
 	for _, opt := range opts {
 		opt(cl)
 	}
 
-	videoCodecMimeType := webrtc.MimeTypeVP8
-	if cl.useH264Codec {
-		videoCodecMimeType = webrtc.MimeTypeH264
-	} else if cl.useAV1Codec {
-		videoCodecMimeType = webrtc.MimeTypeAV1
-	}
-
-	if err := cl.initStack(videoCodecMimeType); err != nil {
+	if err := cl.initStack(cl.videoCodec); err != nil {
 		return nil, err
 	}
 	if err := cl.initSig(); err != nil {
@@ -406,21 +421,17 @@ func (cl *Client) initStack(videoCodecMimeType string) error {
 		// Without sending something over, the NO-DATA-RECEIVED will be triggered
 		// serverside (although this should not, cause STUN-binding messages should trigger
 		// this as well). Therefore send PLIs cyclically.
-		codec := track.Codec()
-		if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) ||
-			strings.EqualFold(codec.MimeType, webrtc.MimeTypeVP8) {
+		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			go func() {
 				pliTicker := time.NewTicker(10 * time.Second)
 				defer pliTicker.Stop()
 				for {
-					select {
-					case <-pliTicker.C:
-						errSend := peerConnection.WriteRTCP(
-							[]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}})
-						if errSend != nil {
-							//log.Println("Failed to send PLI. Stopping")
-							return
-						}
+					<-pliTicker.C
+					errSend := peerConnection.WriteRTCP(
+						[]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}})
+					if errSend != nil {
+						//log.Println("Failed to send PLI. Stopping")
+						return
 					}
 				}
 			}()
@@ -434,9 +445,8 @@ func (cl *Client) initStack(videoCodecMimeType string) error {
 			if err != nil {
 				return
 			}
-			if strings.EqualFold(codec.MimeType, webrtc.MimeTypeH264) ||
-				strings.EqualFold(codec.MimeType, webrtc.MimeTypeVP8) ||
-				strings.EqualFold(codec.MimeType, webrtc.MimeTypeAV1) {
+
+			if track.Kind() == webrtc.RTPCodecTypeVideo {
 				if cl.videoReceivedHandler != nil {
 					cl.videoReceivedHandler(rtpPacket)
 				}
