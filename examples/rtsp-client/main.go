@@ -424,34 +424,7 @@ func setupRtspClientH265(videoTrack ghost.RTPWriter,
 			}
 		}
 
-		// decode H265 NALUs from the RTP packet
-		nalus, err := rtpDec.Decode(pkt)
-		if err != nil {
-			//log.Printf("Decode failed: %s", err)
-			return
-		}
-
-		if !passThroughFlag {
-			for _, nalu := range nalus {
-				typ := rtsph265.NALUType((nalu[0] >> 1) & 0x3F)
-				//log.Debug().Msgf("type %s(%d):", typ.String(), typ)
-				switch typ {
-				case rtsph265.NALUType_IDR_N_LP, rtsph265.NALUType_IDR_W_RADL:
-					// prepend keyframe with SPS and PPS
-					nalus = append([][]byte{pps}, nalus...)
-					nalus = append([][]byte{sps}, nalus...)
-					nalus = append([][]byte{vps}, nalus...)
-					firstKeyFrame = true
-				}
-			}
-
-			// wait for first key-frame
-			if !firstKeyFrame {
-				return
-			}
-		}
-
-		if lastRTPts != pkt.Timestamp {
+		if (firstKeyFrame || passThroughFlag) && lastRTPts != pkt.Timestamp && len(nalusBuffer) > 0 {
 			// last frame is complete, so forward nalus and clear the buffer
 			if err := forwardh265(nalusBuffer, &h265Encoder, videoTrack, lastRTPts); err != nil {
 				log.Error().Err(err).Msg("Failed to forward")
@@ -459,7 +432,24 @@ func setupRtspClientH265(videoTrack ghost.RTPWriter,
 			}
 			nalusBuffer = [][]byte{}
 		}
+
+		// decode H265 NALUs from the RTP packet
+		nalus, err := rtpDec.Decode(pkt)
+		if err != nil {
+			//log.Printf("Decode failed: %s", err)
+			return
+		}
+
+		// append to our buffer
+		// This buffer contains all nalus for a timestamp
 		nalusBuffer = append(nalusBuffer, nalus...)
+
+		if !passThroughFlag {
+			if !firstKeyFrame {
+				firstKeyFrame = containsH265KeyFrame(nalusBuffer)
+			}
+		}
+
 		lastRTPts = pkt.Timestamp
 	}
 
@@ -479,6 +469,17 @@ func setupRtspClientH265(videoTrack ghost.RTPWriter,
 
 	rtspTerminated <- true
 
+}
+
+func containsH265KeyFrame(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		typ := rtsph265.NALUType((nalu[0] >> 1) & 0x3F)
+		switch typ {
+		case rtsph265.NALUType_IDR_N_LP, rtsph265.NALUType_IDR_W_RADL:
+			return true
+		}
+	}
+	return false
 }
 
 func setupRtspClientH264(videoTrack ghost.RTPWriter,
