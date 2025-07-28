@@ -482,6 +482,39 @@ func containsH265KeyFrame(nalus [][]byte) bool {
 	return false
 }
 
+func containsH264SEI(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		typ := rtsph264.NALUType(nalu[0] & 0x1F)
+		switch typ {
+		case rtsph264.NALUTypeSEI:
+			return true
+		}
+	}
+	return false
+}
+
+func containsH264PPS(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		typ := rtsph264.NALUType(nalu[0] & 0x1F)
+		switch typ {
+		case rtsph264.NALUTypePPS:
+			return true
+		}
+	}
+	return false
+}
+
+func containsH264KeyFrame(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		typ := rtsph264.NALUType(nalu[0] & 0x1F)
+		switch typ {
+		case rtsph264.NALUTypeIDR:
+			return true
+		}
+	}
+	return false
+}
+
 func setupRtspClientH264(videoTrack ghost.RTPWriter,
 	rtspTerminated chan<- bool, fh264 *format.H264, mediaH264 *description.Media,
 	session *description.Session, c *gortsplib.Client) {
@@ -526,40 +559,21 @@ func setupRtspClientH264(videoTrack ghost.RTPWriter,
 	nalusBuffer := [][]byte{}
 
 	onRTPPacket := func(pkt *rtp.Packet) {
-
+		log.Debug().Msgf("Packet received ts %d-%d", pkt.SequenceNumber, pkt.Timestamp)
 		if lastRTPts != 0 {
 			if pkt.Timestamp < lastRTPts {
 				log.Info().Msg("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
 			}
 		}
 
-		// decode H264 NALUs from the RTP packet
-		nalus, err := rtpDec.Decode(pkt)
-		if err != nil {
-			//log.Printf("Decode failed: %s", err)
-			return
-		}
+		if (firstKeyFrame || passThroughFlag) && lastRTPts != pkt.Timestamp && len(nalusBuffer) > 0 {
 
-		if !passThroughFlag {
-			for _, nalu := range nalus {
-				typ := rtsph264.NALUType(nalu[0] & 0x1F)
-				// log.Debug().Msgf("type %s:", typ.String())
-				switch typ {
-				case rtsph264.NALUTypeIDR:
-					// prepend keyframe with SPS and PPS
-					nalus = append([][]byte{pps}, nalus...)
-					nalus = append([][]byte{sps}, nalus...)
-					firstKeyFrame = true
-				}
+			if (containsH264SEI(nalusBuffer) || containsH264KeyFrame(nalusBuffer)) && !containsH264PPS(nalusBuffer) {
+				log.Debug().Msgf("Prepending sps and pps to keyframe or refresh-sync")
+				spsAndPPS := [][]byte{sps, pps}
+				nalusBuffer = append(spsAndPPS, nalusBuffer...)
 			}
 
-			// wait for first key-frame
-			if !firstKeyFrame {
-				return
-			}
-		}
-
-		if lastRTPts != pkt.Timestamp {
 			// last frame is complete, so forward nalus and clear the buffer
 			if err := forwardh264(nalusBuffer, &h264Encoder, videoTrack, lastRTPts); err != nil {
 				log.Error().Err(err).Msg("Failed to forward")
@@ -567,7 +581,24 @@ func setupRtspClientH264(videoTrack ghost.RTPWriter,
 			}
 			nalusBuffer = [][]byte{}
 		}
+
+		// decode H264 NALUs from the RTP packet
+		nalus, err := rtpDec.Decode(pkt)
+		if err != nil {
+			// log.Debug().Msgf("Decode failed: %s", err)
+			return
+		}
+
+		// append to our buffer
+		// This buffer contains all nalus for a timestamp
 		nalusBuffer = append(nalusBuffer, nalus...)
+
+		if !passThroughFlag {
+			if !firstKeyFrame {
+				firstKeyFrame = containsH264KeyFrame(nalusBuffer)
+			}
+		}
+
 		lastRTPts = pkt.Timestamp
 	}
 
