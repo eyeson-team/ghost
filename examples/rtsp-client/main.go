@@ -125,7 +125,7 @@ func main() {
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
-	rootCommand.Flags().BoolVarP(&useH265CodecFlag, "h265", "", false, "If true, expect h265 insteand of h264")
+	rootCommand.Flags().BoolVarP(&useH265CodecFlag, "h265", "", false, "If true, expect h265 instead of h264")
 
 	rootCommand.Execute()
 }
@@ -436,7 +436,9 @@ func setupRtspClientH265(videoTrack ghost.RTPWriter,
 		// decode H265 NALUs from the RTP packet
 		nalus, err := rtpDec.Decode(pkt)
 		if err != nil {
-			//log.Printf("Decode failed: %s", err)
+			if err != rtph265.ErrMorePacketsNeeded {
+				log.Warn().Msgf("Decode failed: %s", err)
+			}
 			return
 		}
 
@@ -515,6 +517,13 @@ func containsH264KeyFrame(nalus [][]byte) bool {
 	return false
 }
 
+func debugH264NALUs(nalus [][]byte) {
+	for _, nalu := range nalus {
+		typ := rtsph264.NALUType(nalu[0] & 0x1F)
+		log.Trace().Msgf("type: %v", typ)
+	}
+}
+
 func setupRtspClientH264(videoTrack ghost.RTPWriter,
 	rtspTerminated chan<- bool, fh264 *format.H264, mediaH264 *description.Media,
 	session *description.Session, c *gortsplib.Client) {
@@ -559,7 +568,7 @@ func setupRtspClientH264(videoTrack ghost.RTPWriter,
 	nalusBuffer := [][]byte{}
 
 	onRTPPacket := func(pkt *rtp.Packet) {
-		log.Debug().Msgf("Packet received ts %d-%d", pkt.SequenceNumber, pkt.Timestamp)
+		log.Trace().Msgf("Packet received ts %d-%d", pkt.SequenceNumber, pkt.Timestamp)
 		if lastRTPts != 0 {
 			if pkt.Timestamp < lastRTPts {
 				log.Info().Msg("Warning: Non monotonic ts. Probably a B-Frame, but B-frames not supported.")
@@ -585,9 +594,13 @@ func setupRtspClientH264(videoTrack ghost.RTPWriter,
 		// decode H264 NALUs from the RTP packet
 		nalus, err := rtpDec.Decode(pkt)
 		if err != nil {
-			// log.Debug().Msgf("Decode failed: %s", err)
+			if err != rtph264.ErrMorePacketsNeeded {
+				log.Warn().Msgf("Decode failed: %s", err)
+			}
 			return
 		}
+
+		debugH264NALUs(nalus)
 
 		// append to our buffer
 		// This buffer contains all nalus for a timestamp
@@ -595,7 +608,7 @@ func setupRtspClientH264(videoTrack ghost.RTPWriter,
 
 		if !passThroughFlag {
 			if !firstKeyFrame {
-				firstKeyFrame = containsH264KeyFrame(nalusBuffer)
+				firstKeyFrame = containsH264KeyFrame(nalusBuffer) || containsH264SEI(nalusBuffer)
 			}
 		}
 

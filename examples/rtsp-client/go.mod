@@ -8,15 +8,15 @@ require (
 	github.com/bluenviron/gortsplib/v4 v4.15.0
 	github.com/bluenviron/mediacommon v1.11.1-0.20240525122142-20163863aa75
 	github.com/eyeson-team/eyeson-go v1.7.1-0.20250625151357-066c5249b9be
-	github.com/eyeson-team/ghost/v2 v2.7.2-0.20250709135843-59f942bf7001
-	github.com/pion/rtp v1.8.20
+	github.com/eyeson-team/ghost/v2 v2.8.1
+	github.com/pion/rtp v1.8.21
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.3.0
 )
 
 require (
 	github.com/bgentry/actioncable-go v0.0.0-20170309201021-1f2dbd93dbae // indirect
-	github.com/bluenviron/mediacommon/v2 v2.3.0 // indirect
+	github.com/bluenviron/mediacommon/v2 v2.4.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/eyeson-team/gosepp/v3 v3.4.2-0.20250625152754-7520ae68db73 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -34,7 +34,7 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.15 // indirect
 	github.com/pion/sctp v1.8.15 // indirect
-	github.com/pion/sdp/v3 v3.0.14 // indirect
+	github.com/pion/sdp/v3 v3.0.15 // indirect
 	github.com/pion/srtp/v2 v2.0.18 // indirect
 	github.com/pion/srtp/v3 v3.0.6 // indirect
 	github.com/pion/stun v0.6.1 // indirect
@@ -45,8 +45,10 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
-	golang.org/x/crypto v0.39.0 // indirect
-	golang.org/x/net v0.41.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
+	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/bluenviron/mediacommon/v2 => github.com/eyeson-team/mediacommon/v2 v2.0.0-20251120115606-11f9a6e0a79d
