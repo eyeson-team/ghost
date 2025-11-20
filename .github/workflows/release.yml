@@ -11,7 +11,7 @@ jobs:
 
     strategy:
       matrix:
-        goos: [linux, windows]
+        goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
         example: [rtsp-client, rtmp-server, video-playback]
         exclude:
@@ -73,8 +73,8 @@ jobs:
             -o "bin/${BIN_NAME}" \
             ${{ steps.binary.outputs.package }}
 
-          # Compress with UPX (skip for darwin arm64 as it may cause issues)
-          if [ "${{ matrix.goos }}" != "darwin" ] || [ "${{ matrix.goarch }}" != "arm64" ]; then
+          # Compress with UPX (skip macOS entirely as it's not well supported)
+          if [ "${{ matrix.goos }}" != "darwin" ]; then
             upx --best --lzma "bin/${BIN_NAME}"
           fi
 
@@ -118,10 +118,20 @@ jobs:
 
       - name: Prepare release assets
         run: |
+          # Debug: Show artifact directory structure
+          echo "=== Artifact directory structure ==="
+          find artifacts -type f -ls || true
+
           # Move all archives to the root level
           # GitHub Actions downloads artifacts into subdirectories named after the artifact
-          find artifacts -name "*.zip" -exec mv {} . \;
-          find artifacts -name "*.tar.gz" -exec mv {} . \;
+          echo "=== Moving ZIP files ==="
+          find artifacts -name "*.zip" -type f -print0 | xargs -0 -I {} mv {} . || echo "No ZIP files found"
+
+          echo "=== Moving TAR.GZ files ==="
+          find artifacts -name "*.tar.gz" -type f -print0 | xargs -0 -I {} mv {} . || echo "No TAR.GZ files found"
+
+          echo "=== Files in root directory ==="
+          ls -la *.zip *.tar.gz 2>/dev/null || echo "No archive files in root"
 
       - name: Generate release notes
         id: release_notes
