@@ -8,7 +8,8 @@ build_n_pack() {
 	# using upx to compress the binary
   os=$1
   arch=$2
-  GOOS=$1 GOARCH=$arch go build -ldflags="-s -w" \
+  GOOS=$1 GOARCH=$arch go build -ldflags="-s -w
+     -X 'main.Version=$(git describe --tags --always --dirty)'" \
     -o bin/${binprefix}_${os}_${arch} $package \
     && upx --best --lzma bin/${binprefix}_${os}_${arch}
 }
@@ -16,7 +17,8 @@ build_n_pack() {
 build() {
   os=$1
   arch=$2
-  GOOS=$os GOARCH=$arch go build -ldflags="-s -w" \
+  GOOS=$os GOARCH=$arch go build -ldflags="-s -w
+     -X 'main.Version=$(git describe --tags --always --dirty)'" \
     -o bin/${binprefix}_${os}_${arch} $package
 }
 
