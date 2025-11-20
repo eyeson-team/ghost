@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # e.g. v0.1.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        example: [rtsp-client, rtmp-server, video-playback]
+        exclude:
+          # Exclude arm combinations that might not be needed or cause issues
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # required for git tags & commit hash
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: Get short commit hash
+        id: vars
+        run: |
+          echo "commit=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set binary names
+        id: binary
+        run: |
+          case "${{ matrix.example }}" in
+            "rtsp-client")
+              echo "name=rtsp-client" >> $GITHUB_OUTPUT
+              echo "package=rtsp-client" >> $GITHUB_OUTPUT
+              ;;
+            "rtmp-server")
+              echo "name=rtmp-server" >> $GITHUB_OUTPUT
+              echo "package=rtmp-server" >> $GITHUB_OUTPUT
+              ;;
+            "video-playback")
+              echo "name=ghost-player" >> $GITHUB_OUTPUT
+              echo "package=ghost-player" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Build binary
+        working-directory: ./examples/${{ matrix.example }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BIN_NAME="${{ steps.binary.outputs.name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [ "${GOOS}" = "windows" ]; then BIN_NAME="${BIN_NAME}.exe"; fi
+
+          # Build the binary
+          go build \
+            -ldflags="-s -w -X 'main.Version=${GITHUB_REF_NAME}' -X 'main.Commit=${{ steps.vars.outputs.commit }}'" \
+            -o "bin/${BIN_NAME}" \
+            ${{ steps.binary.outputs.package }}
+
+          # Compress with UPX (skip for darwin arm64 as it may cause issues)
+          if [ "${{ matrix.goos }}" != "darwin" ] || [ "${{ matrix.goarch }}" != "arm64" ]; then
+            upx --best --lzma "bin/${BIN_NAME}"
+          fi
+
+          echo "BIN_NAME=${BIN_NAME}" >> $GITHUB_ENV
+          echo "BIN_PATH=examples/${{ matrix.example }}/bin/${BIN_NAME}" >> $GITHUB_ENV
+
+      - name: Package artifact
+        run: |
+          ARCHIVE="${{ steps.binary.outputs.name }}-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cd "examples/${{ matrix.example }}/bin"
+            zip "../../../${ARCHIVE}.zip" "$BIN_NAME"
+            cd "../../.."
+            echo "ASSET=${ARCHIVE}.zip" >> $GITHUB_ENV
+          else
+            cd "examples/${{ matrix.example }}/bin"
+            tar czf "../../../${ARCHIVE}.tar.gz" "$BIN_NAME"
+            cd "../../.."
+            echo "ASSET=${ARCHIVE}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload built artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare release assets
+        run: |
+          # Move all archives to the root level
+          find artifacts -name "*.zip" -o -name "*.tar.gz" | while read file; do
+            mv "$file" .
+          done
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Ghost Examples Release ${GITHUB_REF_NAME}
+
+          This release includes pre-built binaries for all three Ghost example applications:
+
+          ### 📦 Included Binaries
+          - **rtsp-client**: RTSP client implementation
+          - **rtmp-server**: RTMP server implementation  
+          - **ghost-player**: Video playback example
+
+          ### 🏗️ Build Information
+          - Built from commit: ${GITHUB_SHA:0:7}
+          - Go version: 1.22
+          - Platforms: Linux, Windows, macOS
+          - Architectures: amd64, arm64
+
+          ### 📋 Usage
+          Download the appropriate binary for your platform, extract it, and run directly.
+          Each binary includes version information and help documentation.
+
+          ### 🔧 Technical Notes
+          - Binaries are compressed with UPX for smaller file sizes (except macOS ARM64)
+          - Debug information stripped for production builds
+          - Version and commit information embedded in binaries
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.zip
+            *.tar.gz
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
