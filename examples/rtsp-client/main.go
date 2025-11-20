@@ -29,6 +29,12 @@ import (
 )
 
 var (
+	Version   = "dev"
+	Commit    = "-"
+	BuildDate = "-"
+)
+
+var (
 	apiEndpointFlag        string
 	userFlag               string
 	userIDFlag             string
@@ -113,6 +119,8 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	cobra.OnInitialize(initLogging)
+
+	rootCommand.Version = fmt.Sprintf("%s / %s / %s", Version, BuildDate, Commit)
 
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtsp-test", "User name to use")
