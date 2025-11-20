@@ -136,7 +136,7 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
-          cat > release_notes.md << 'EOF'
+          cat > release_notes.md << EOF
           ## Ghost Examples Release ${GITHUB_REF_NAME}
 
           This release includes pre-built binaries for all three Ghost example applications:
@@ -157,7 +157,7 @@ jobs:
           Each binary includes version information and help documentation.
 
           ### 🔧 Technical Notes
-          - Binaries are compressed with UPX for smaller file sizes (except macOS ARM64)
+          - Binaries are compressed with UPX for smaller file sizes (except macOS)
           - Debug information stripped for production builds
           - Version and commit information embedded in binaries
           EOF
