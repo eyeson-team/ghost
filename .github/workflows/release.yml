@@ -119,9 +119,9 @@ jobs:
       - name: Prepare release assets
         run: |
           # Move all archives to the root level
-          find artifacts -name "*.zip" -o -name "*.tar.gz" | while read file; do
-            mv "$file" .
-          done
+          # GitHub Actions downloads artifacts into subdirectories named after the artifact
+          find artifacts -name "*.zip" -exec mv {} . \;
+          find artifacts -name "*.tar.gz" -exec mv {} . \;
 
       - name: Generate release notes
         id: release_notes
