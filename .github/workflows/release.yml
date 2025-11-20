@@ -156,10 +156,6 @@ jobs:
           Download the appropriate binary for your platform, extract it, and run directly.
           Each binary includes version information and help documentation.
 
-          ### 🔧 Technical Notes
-          - Binaries are compressed with UPX for smaller file sizes (except macOS)
-          - Debug information stripped for production builds
-          - Version and commit information embedded in binaries
           EOF
 
       - name: Create GitHub Release
