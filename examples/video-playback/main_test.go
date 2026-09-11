@@ -180,3 +180,45 @@ func TestLoopTimestampsMonotonic(t *testing.T) {
 	}
 	t.Logf("loop boundary ts %d -> %d (delta %d)", last, next, next-last)
 }
+
+type blockingTerminator struct{ called chan struct{} }
+
+func (b *blockingTerminator) TerminateCall() error {
+	close(b.called)
+	select {} // never returns, like TerminateCall on a dead websocket
+}
+
+type okTerminator struct{}
+
+func (okTerminator) TerminateCall() error { return nil }
+
+// TestTerminateCallDoesNotHang covers the shutdown path when the signalling
+// websocket is gone and the server never confirms termination.
+func TestTerminateCallDoesNotHang(t *testing.T) {
+	b := &blockingTerminator{called: make(chan struct{})}
+	start := time.Now()
+	terminateCall(b)
+	elapsed := time.Since(start)
+
+	select {
+	case <-b.called:
+	default:
+		t.Fatal("TerminateCall was never invoked")
+	}
+	if elapsed < terminateTimeout {
+		t.Errorf("returned after %v, expected to wait the full %v", elapsed, terminateTimeout)
+	}
+	if elapsed > terminateTimeout+2*time.Second {
+		t.Errorf("returned after %v, expected to give up at %v", elapsed, terminateTimeout)
+	}
+	t.Logf("gave up after %v instead of blocking forever", elapsed.Round(time.Millisecond))
+}
+
+// A healthy termination must not sit out the timeout.
+func TestTerminateCallReturnsPromptly(t *testing.T) {
+	start := time.Now()
+	terminateCall(okTerminator{})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %v, should return immediately", elapsed)
+	}
+}

@@ -78,6 +78,10 @@ const (
 	pacingSlice         = time.Millisecond
 	defaultPacingBudget = 20 * time.Millisecond
 	maxPacingBudget     = 100 * time.Millisecond
+
+	// How long to wait for the server to confirm call termination before
+	// giving up and exiting anyway.
+	terminateTimeout = 5 * time.Second
 )
 
 // frameRewriter adapts a container frame to what the RTP payloader expects.
@@ -642,6 +646,34 @@ func waitReady(room *eyeson.UserService) error {
 	}
 }
 
+// callTerminator is the slice of the ghost client used during shutdown, kept
+// as an interface so the timeout behaviour can be tested.
+type callTerminator interface {
+	TerminateCall() error
+}
+
+// terminateCall asks the server to end the call without waiting forever.
+//
+// Client.TerminateCall sends a terminate message over the signalling websocket
+// and then blocks on context.Background() until the server confirms. A nil
+// Done channel never fires, so if the websocket is down - in which case the
+// message is dropped by the sender goroutine anyway - the call never returns
+// and the process cannot be shut down cleanly.
+func terminateCall(client callTerminator) {
+	done := make(chan error, 1)
+	go func() { done <- client.TerminateCall() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Warn().Err(err).Msg("Terminating the call failed")
+		}
+	case <-time.After(terminateTimeout):
+		log.Warn().Msgf("Server did not confirm termination within %v, exiting anyway",
+			terminateTimeout)
+	}
+}
+
 func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	userID string) {
 
@@ -726,8 +758,14 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	case <-playbackTerminatedCh:
 	}
 
-	log.Info().Msg("Stopping. So terminating this call")
-	eyesonClient.TerminateCall()
+	// Restore default signal handling before starting shutdown. While
+	// signal.Notify is active the runtime delivers SIGINT to the channel above
+	// instead of killing the process, so a second Ctrl-C would be swallowed and
+	// a shutdown that hangs could only be escaped with kill -9.
+	signal.Stop(chStop)
+
+	log.Info().Msg("Stopping. So terminating this call (Ctrl-C again to force)")
+	terminateCall(eyesonClient)
 }
 
 // ---------------------------------------------------------------------------

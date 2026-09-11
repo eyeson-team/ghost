@@ -213,6 +213,37 @@ ffmpeg -i Big_Buck_Bunny_720_10s_30MB.webm \
 Short keyframe intervals (`-g`) matter as much as bitrate: they cap how long a
 freeze can last after a loss.
 
+### Ctrl-C does not stop the player
+
+Fixed, but worth knowing why, because the failure mode was a process that only
+`kill -9` could stop.
+
+Two separate causes, both triggered by losing the connection to the meeting:
+
+`Client.TerminateCall` sends a terminate message over the signalling websocket
+and then waits for the server to confirm, using `context.Background()`. A
+background context has a nil `Done` channel, so that wait has no timeout. When
+the websocket is down the message is dropped by the sender goroutine and the
+confirmation never arrives, so the call blocks forever. Shutdown now runs with
+a 5 second cap and exits regardless.
+
+Separately, `signal.Notify` takes SIGINT away from the runtime for the whole
+process. Once the first Ctrl-C had been consumed, further presses were
+delivered to a channel nobody was reading rather than killing the process. The
+player now calls `signal.Stop` as soon as it starts shutting down, which
+restores default handling, so a second Ctrl-C terminates immediately.
+
+### "read failed with: websocket: close 1006"
+
+Expected on a flaky connection, and handled. gosepp reconnects: a read failure
+breaks its inner loop and the outer loop dials again, retrying every 2 seconds
+indefinitely. The `failed to send ping` warnings every 3 seconds are the
+keepalive failing against a socket that has not recovered yet.
+
+What the player does *not* currently do is give up on its own after a long
+outage. If ICE reaches `failed` the stream is dead but the process stays up
+until you stop it.
+
 ## Implementation notes
 
 Things that are easy to get wrong here, kept as notes so they don't get
