@@ -60,6 +60,64 @@ Beyond the existing ones (`--api-endpoint`, `--user`, `--room-id`, `--loop`,
 | Flag | Meaning |
 | --- | --- |
 | `--no-audio` | Never send audio, even when the codec would match. |
+| `--check` | Inspect the file and report whether it can be streamed, then exit. |
+
+## Checking a file before streaming
+
+`--check` inspects a file and reports whether it will stream, without
+contacting the API or creating a meeting:
+
+```sh
+ghost-player --check clip.webm
+```
+
+```
+clip.webm
+
+  Container   webm, 10s
+  Resolution  1280x720 @ 30.0 fps
+  Video       AV1, supported
+  Audio       Vorbis, NOT supported, will stream without audio
+  Bitrate     25.2 Mbit/s average, 27.4 Mbit/s peak second
+  Worst frame 210 KB, 180 RTP packets
+  Keyframes   3, longest stretch without one 4s
+
+  NOT RECOMMENDED
+  At 27.4 Mbit/s this is far above what a meeting participant can send.
+  Expect little or no picture. Re-encode before streaming.
+
+  - audio codec "A_VORBIS" cannot be sent (only Opus is supported), streaming video only
+  - the largest frame needs 180 RTP packets, which is a heavy burst
+
+  Suggested:
+    ffmpeg -i clip.webm -c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -g 60 -c:a libopus out.webm
+```
+
+Everything reported comes from the file itself: the packet stream is scanned
+once, so the bitrates are measured rather than taken from container metadata,
+and the packet count for the worst frame is produced by the same payloader the
+player uses.
+
+The verdict is one of:
+
+| Verdict | Meaning | Exit code |
+| --- | --- | --- |
+| `LOOKS GOOD` | should stream fine | 0 |
+| `SHOULD WORK, WITH RISK` | plays, but a lost packet may freeze the picture | 0 |
+| `NOT RECOMMENDED` | bitrate too high, expect little or no picture | 1 |
+| `WILL NOT STREAM` | unsupported codec or unreadable container | 1 |
+
+Exit codes make it usable as a gate:
+
+```sh
+ghost-player --check clip.webm && ghost-player $API_KEY clip.webm
+```
+
+Note that an unsupported *audio* codec is a warning, not a failure: the player
+streams video only, so the exit code stays 0.
+
+The suggested ffmpeg line only re-encodes what has to be re-encoded. If the
+video codec is fine and only the audio is wrong, it copies the video stream.
 
 ## Preparing arbitrary files
 

@@ -38,12 +38,23 @@ var (
 	loopFlag               bool
 	insecureSkipVerifyFlag bool
 	noAudioFlag            bool
+	checkFlag              bool
 
 	rootCommand = &cobra.Command{
-		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE",
+		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE\n  ghost-player --check VIDEO_FILE",
 		Short: "ghost-player",
-		Args:  cobra.MinimumNArgs(2),
+		Args:  cobra.RangeArgs(1, 2),
 		Run: func(cmd *cobra.Command, args []string) {
+			if checkFlag {
+				// Inspect only: no API call, no meeting, no connection.
+				os.Exit(checkFile(args[len(args)-1]))
+			}
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr,
+					"need an API key or guest link and a video file, or --check with just a video file")
+				cmd.Usage()
+				os.Exit(2)
+			}
 			videoPlayerExample(args[0], args[1], apiEndpointFlag,
 				userFlag, roomIDFlag, userIDFlag)
 		},
@@ -56,14 +67,14 @@ var (
 
 // Matroska/WebM CodecID strings. See https://www.matroska.org/technical/codec_specs.html
 const (
-	codecIDVP8   = "V_VP8"
-	codecIDVP9   = "V_VP9"
-	codecIDAV1   = "V_AV1"
-	codecIDH264  = "V_MPEG4/ISO/AVC"
-	codecIDH265  = "V_MPEGH/ISO/HEVC"
-	codecIDOpus  = "A_OPUS"
-	codecIDVoris = "A_VORBIS"
-	codecIDAAC   = "A_AAC"
+	codecIDVP8    = "V_VP8"
+	codecIDVP9    = "V_VP9"
+	codecIDAV1    = "V_AV1"
+	codecIDH264   = "V_MPEG4/ISO/AVC"
+	codecIDH265   = "V_MPEGH/ISO/HEVC"
+	codecIDOpus   = "A_OPUS"
+	codecIDVorbis = "A_VORBIS"
+	codecIDAAC    = "A_AAC"
 )
 
 const (
@@ -827,6 +838,7 @@ or transcode the video as well if its codec is not in the list above:
 	rootCommand.Flags().BoolVarP(&loopFlag, "loop", "", true, "Restart video-playback on EOF")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "never send audio, even if the codec would match")
+	rootCommand.Flags().BoolVarP(&checkFlag, "check", "", false, "inspect the video file and report whether it can be streamed, then exit without connecting")
 
 	rootCommand.Execute()
 }
