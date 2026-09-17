@@ -78,19 +78,19 @@ clip.webm
   Resolution  1280x720 @ 30.0 fps
   Video       AV1, supported
   Audio       Vorbis, NOT supported, will stream without audio
-  Bitrate     25.2 Mbit/s average, 27.4 Mbit/s peak second
-  Worst frame 210 KB, 180 RTP packets
+  Bitrate     25.2 Mbit/s average, 27.4 Mbit/s sustained (95th percentile second)
+  Worst case  31.0 Mbit/s in one second, largest frame 210 KB (180 RTP packets)
   Keyframes   3, longest stretch without one 4s
 
   NOT RECOMMENDED
-  At 27.4 Mbit/s this is far above what a meeting participant can send.
-  Expect little or no picture. Re-encode before streaming.
+  At a sustained 27.4 Mbit/s this is far above what a meeting participant
+  can send. Expect little or no picture. Re-encode before streaming.
 
   - audio codec "A_VORBIS" cannot be sent (only Opus is supported), streaming video only
   - the largest frame needs 180 RTP packets, which is a heavy burst
 
   Suggested:
-    ffmpeg -i clip.webm -c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -g 60 -c:a libopus out.webm
+    ffmpeg -i clip.webm -c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -bufsize 2M -g 60 -c:a libopus out.webm
 ```
 
 Everything reported comes from the file itself: the packet stream is scanned
@@ -118,6 +118,110 @@ streams video only, so the exit code stays 0.
 
 The suggested ffmpeg line only re-encodes what has to be re-encoded. If the
 video codec is fine and only the audio is wrong, it copies the video stream.
+
+### Can the player buffer, or drop frames, instead of re-encoding?
+
+No, and it is worth knowing why, because both sound like they should work.
+
+**Dropping frames does not reduce bitrate here.** Video codecs code most frames
+as differences from earlier ones. Dropping a frame that a later frame refers to
+corrupts everything until the next keyframe. The player passes through whatever
+the file contains and cannot re-derive those references without decoding and
+re-encoding, which is exactly the transcode being avoided. Frame rate is only
+reducible at encode time, which is why the suggested command uses `-r 25` when
+the source runs faster than the server's 25 fps.
+
+**Buffering does not reduce it either.** Buffering smooths delivery but does
+not change how many bits the file needs. The player already paces each frame
+across its interval, and the reader runs ahead so neither track stalls the
+other. Spreading further means falling behind: a 710 KB frame emitted at 3
+Mbit/s takes nearly two seconds, and since this is a live meeting rather than a
+download, that latency accumulates instead of being absorbed.
+
+So the bits have to come down at encode time. Resolution is the strongest
+lever, ahead of any bitrate flag: a meeting tile is nowhere near 1080p wide,
+and halving the width cuts both sustained bitrate and keyframe size.
+
+### Where the thresholds came from
+
+The verdicts are calibrated against files actually streamed into a meeting,
+not against theory:
+
+| Sustained | Codec / size | Result |
+| --- | --- | --- |
+| 1.0 Mbit/s | VP9 1280x720 | clean |
+| 1.5 Mbit/s | VP9 1280x720 | clean |
+| 3.1 Mbit/s | H264 1280x534 | clean, 140 packet frames |
+| 3.3 Mbit/s | VP9 1920x800 | clean video, 614 packet frames |
+| 11.2 Mbit/s | VP8 1920x800 | no usable picture |
+| 46.1 Mbit/s | VP9 1280x534 | no picture |
+
+So anything a little over 3 Mbit/s is known good, and the failures begin an
+order of magnitude higher. `LOOKS GOOD` runs to 4 Mbit/s sustained,
+`NOT RECOMMENDED` starts at 8, and the band between covers the untested gap
+rather than pretending to know exactly where it breaks. `calibration_test.go`
+holds this table as assertions, so the thresholds cannot drift back without a
+test failing.
+
+Note the burst warning threshold in particular: files with 614 packet frames
+have streamed cleanly since the pacer landed, so no failure has yet been traced
+to burst size alone. It warns at 400 as a heads-up, not as a fault.
+
+A file that streams cleanly is given no ffmpeg suggestion at all.
+
+### Re-encoding: use x264, not libvpx-vp9
+
+The suggested commands use `libx264` when the video has to be re-encoded, even
+though the eyeson media server takes VP8, VP9 and AV1 too.
+
+`libvpx-vp9` in single pass VBR is unreliable about hitting a bitrate target.
+A 12 minute 1080p source asked for `-b:v 2M` came back at 31 Mbit/s in a 2.8 GB
+file, having ignored `-maxrate` and `-bufsize` entirely, and took 43 minutes to
+do it. The same material through x264 holds the target and encodes many times
+faster. Measured on a 30 second 1920x800 source scaled to 1280 wide:
+
+| | libvpx-vp9 | libx264 |
+| --- | --- | --- |
+| speed | ~0.3x realtime | ~32x realtime |
+| bitrate asked / got | 2 Mbit/s / 31 Mbit/s | 2 Mbit/s / 2.1 Mbit/s |
+| largest frame | 459 KB (397 packets) | 160 KB (140 packets) |
+
+A 12 minute 1080p source took 43 minutes through libvpx-vp9 and 22 seconds
+through x264, on the same machine and the same ffmpeg build.
+
+Baseline profile is specified deliberately: it keeps B-frames out of the
+stream, so container timecodes stay monotonic.
+
+If you would rather stay with VP9, use two-pass encoding and verify the result
+with `--check` before streaming. Do not trust a single pass VBR target.
+
+### Why the verdict uses the 95th percentile and not the peak
+
+A feature film contains scene cuts, and the keyframe at a cut can be many times
+the size of an ordinary frame. One second of a perfectly reasonable 2 Mbit/s
+file can therefore measure ten times that. Judging the file by its worst second
+condemns material that plays fine apart from a brief stutter at the cut.
+
+So the verdict is based on the higher of the average and the 95th percentile
+second, which is what the file asks for continuously. The peak second and the
+largest frame are still reported, and a peak far above the sustained rate
+becomes a warning rather than a rejection.
+
+If you do want to flatten the spikes, note that `-maxrate` alone does very
+little: it needs `-bufsize` to constrain the rate control window, and
+`-max-intra-rate` caps how far a keyframe may exceed the average frame size.
+In libvpx's VBR mode even those are advisory, which is why the suggested
+commands reach for resolution and x264 instead.
+
+The thresholds behind the verdicts (2.5 and 6 Mbit/s sustained) are starting
+estimates, not measurements against the media server. They are constants at the
+top of `check.go`; once you have streamed enough files to know where the line
+really falls, move them.
+
+```sh
+ffmpeg -i in.webm -c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -bufsize 2M \
+  -max-intra-rate 300 -g 60 -c:a copy out.webm
+```
 
 ## Preparing arbitrary files
 
@@ -230,6 +334,22 @@ The API rejected the join outright: wrong or expired token, wrong
 `--api-endpoint`, or no network. This one fails immediately rather than
 waiting.
 
+### The numbers from --check look impossible
+
+Symptoms: a duration longer than the file really is, a frame rate lower than
+the real one, a peak bitrate many times the average, or a keyframe gap of
+around 65 seconds.
+
+These all come from the same upstream parsing bug: `ebml-go` reads Matroska
+block timecodes as unsigned when they are signed, so negative offsets arrive
+65536ms too large. The player corrects for this now. If you see numbers like
+these from an older build, they are artefacts rather than a problem with the
+file, and `--verbose` reports how many timecodes were corrected.
+
+Files muxed by ffmpeg with an audio track are the common case. A file that
+looks fine in `ffprobe` but reports a wildly inflated peak bitrate here was
+almost certainly hitting this.
+
 ### Video is black, or freezes and never recovers
 
 Almost always a **bitrate** problem rather than a codec problem. A useful check:
@@ -335,6 +455,25 @@ requires.
 and parks at EOF waiting for a seek command. Closing the file without calling
 `Shutdown()` and draining `reader.Chan` either leaks the goroutine (one per
 playback loop, each holding a file handle) or panics on a closed file.
+
+**Block timecodes need unwrapping.** Matroska stores a block's timecode as a
+signed 16 bit offset from its cluster timecode, but `ebml-go` parses it as
+unsigned, so every negative offset arrives 65536ms too large. ffmpeg produces
+such offsets routinely when muxing with audio, because a cluster begins on a
+video keyframe while an audio block in it can carry a slightly earlier
+presentation time. Uncorrected, playback sleeps for a minute on the bad packet
+and the RTP timestamp jumps 65 seconds forward and back, so the receiver
+decodes nothing. `timecodeFixer` subtracts the wrap from any jump past half its
+size; real gaps between blocks are never that large.
+
+**Audio is paced on its own goroutine, with the reader running ahead.** Pacing
+a large video frame occupies most of a frame interval, and a 1080p frame can
+take over 30ms. If reading happened on the same goroutine, no audio packet
+could be read during that window, so it would already be late when sent. Opus
+wants a packet every 20ms, and the result is audibly scratchy. Measured on a
+14 Mbit/s 720p file, the 95th percentile gap between audio packets was 37.9ms
+before and 20.8ms after, with the maximum dropping from 58.0ms to 21.1ms. Both
+goroutines pace against the same start time, so the tracks stay in sync.
 
 **Frames are paced, not burst.** A frame's RTP packets are released in ~1ms
 slices across the frame interval rather than written back to back. The budget

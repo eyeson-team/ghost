@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -93,6 +94,12 @@ const (
 	// How long to wait for the server to confirm call termination before
 	// giving up and exiting anyway.
 	terminateTimeout = 5 * time.Second
+
+	// How far the reader may run ahead of each track. Video is the binding
+	// constraint: a few frames of lead is enough to keep audio flowing without
+	// holding much encoded data in memory.
+	videoQueueDepth = 8
+	audioQueueDepth = 50
 )
 
 // frameRewriter adapts a container frame to what the RTP payloader expects.
@@ -287,6 +294,52 @@ func newAVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
 		}
 		return out
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Block timecode correction
+//
+// Matroska stores a block's timecode as a SIGNED 16 bit offset from its
+// cluster timecode, but ebml-go parses it as unsigned:
+//
+//	p.Timecode = tbase + time.Millisecond*time.Duration(
+//		uint(data[1])<<8+uint(data[2]))
+//
+// A negative offset therefore comes back exactly 65536ms too large. These
+// offsets are common in files muxed by ffmpeg when audio is present, because a
+// cluster starts on a video keyframe while an audio block in that cluster can
+// carry a slightly earlier presentation time.
+//
+// Left uncorrected this is destructive rather than cosmetic: playback sleeps
+// for a minute on the bad packet, and the RTP timestamp jumps 65 seconds
+// forward and then back, which stops the receiver decoding anything at all.
+//
+// Genuine gaps between blocks are milliseconds to seconds, never more than
+// half the wrap, so a jump past that threshold unambiguously identifies the
+// bug.
+// ---------------------------------------------------------------------------
+
+const blockTimecodeWrap = 65536 * time.Millisecond
+
+type timecodeFixer struct {
+	highest time.Duration
+	seen    bool
+	fixed   int
+}
+
+func (f *timecodeFixer) fix(tc time.Duration) time.Duration {
+	if f.seen && tc-f.highest > blockTimecodeWrap/2 {
+		tc -= blockTimecodeWrap
+		f.fixed++
+	}
+	if tc < 0 {
+		tc = 0
+	}
+	if !f.seen || tc > f.highest {
+		f.highest = tc
+		f.seen = true
+	}
+	return tc
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +560,33 @@ func (rs *rtpSender) writePaced(packets []*rtp.Packet, budget time.Duration) int
 	return writeErrs
 }
 
+// mediaFrame is one encoded frame on its way to a pacing goroutine.
+type mediaFrame struct {
+	data []byte
+	tc   time.Duration
+}
+
+func clone(b []byte) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
+
+// pump paces one track: it waits until each frame is due and then sends it.
+// Waiting here rather than in the reading loop is what lets the reader stay
+// ahead, so neither track can delay the other.
+func pump(sender *rtpSender, frames <-chan mediaFrame, started time.Time,
+	tcOffset time.Duration, wg *sync.WaitGroup) {
+
+	defer wg.Done()
+	for frame := range frames {
+		if wait := frame.tc - time.Since(started); wait > 0 {
+			time.Sleep(wait)
+		}
+		sender.send(frame.data, tcOffset+frame.tc)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ingest
 // ---------------------------------------------------------------------------
@@ -547,11 +627,41 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 
 	started := time.Now()
 	var lastTC time.Duration
+	// One fixer for the whole pass: audio and video are interleaved and their
+	// timecodes advance together, so they share the wrap detection.
+	fixer := &timecodeFixer{}
+
+	// Both tracks are paced on their own goroutines while the reading loop runs
+	// ahead of them.
+	//
+	// Pacing a large video frame takes most of a frame interval, and a 1080p
+	// frame can hold that up for over 30ms. If reading happened on the same
+	// goroutine, no audio packet could even be read during that window, so it
+	// would already be late by the time it was sent. Opus wants a packet every
+	// 20ms and the result is audibly scratchy.
+	//
+	// The queues bound how far ahead the reader may run, and both goroutines
+	// pace against the same start time, so the tracks stay in sync.
+	videoCh := make(chan mediaFrame, videoQueueDepth)
+	audioCh := make(chan mediaFrame, audioQueueDepth)
+	var pumps sync.WaitGroup
+
+	pumps.Add(1)
+	go pump(videoSender, videoCh, started, tcOffset, &pumps)
+	if audioSender != nil {
+		pumps.Add(1)
+		go pump(audioSender, audioCh, started, tcOffset, &pumps)
+	}
+	defer func() {
+		close(videoCh)
+		close(audioCh)
+		pumps.Wait()
+	}()
 
 	for packet := range reader.Chan {
 		if len(packet.Data) == 0 {
 			// end of file
-			return lastTC, nil
+			break
 		}
 		if packet.Timecode == webm.BadTC {
 			continue
@@ -560,23 +670,28 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 			(audioSender == nil || packet.TrackNumber != plan.audioTrackNumber) {
 			continue
 		}
-
-		// Pace against the wall clock. Both tracks share one clock, which is
-		// what keeps them in sync relative to each other.
-		if wait := packet.Timecode - time.Since(started); wait > 0 {
-			time.Sleep(wait)
+		tc := fixer.fix(packet.Timecode)
+		if tc > lastTC {
+			lastTC = tc
 		}
-		lastTC = packet.Timecode
 
-		if packet.TrackNumber == plan.videoTrackNumber {
-			data := packet.Data
-			if plan.videoRewrite != nil {
-				data = plan.videoRewrite(data, packet.Keyframe)
-			}
-			videoSender.send(data, tcOffset+packet.Timecode)
+		if packet.TrackNumber != plan.videoTrackNumber {
+			audioCh <- mediaFrame{data: clone(packet.Data), tc: tc}
 			continue
 		}
-		audioSender.send(packet.Data, tcOffset+packet.Timecode)
+
+		// A rewriter already returns a fresh buffer; otherwise the payload has
+		// to be copied, because the parser reuses its read buffers.
+		data := packet.Data
+		if plan.videoRewrite != nil {
+			data = plan.videoRewrite(data, packet.Keyframe)
+		} else {
+			data = clone(data)
+		}
+		videoCh <- mediaFrame{data: data, tc: tc}
+	}
+	if fixer.fixed > 0 {
+		log.Debug().Msgf("corrected %d wrapped block timecodes", fixer.fixed)
 	}
 	return lastTC, nil
 }

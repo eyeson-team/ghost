@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ebml-go/webm"
@@ -12,17 +14,40 @@ import (
 // Rough guidance for what one WebRTC participant can reasonably push into a
 // meeting. These are not hard limits enforced anywhere, they are the
 // thresholds used to phrase the verdict.
+// Thresholds calibrated against files actually streamed into a meeting:
+//
+//	1.0 Mbit/s sustained, 1280x720 VP9        clean
+//	1.5 Mbit/s sustained, 1280x720 VP9        clean
+//	3.1 Mbit/s sustained, 1280x534 H264       clean, 140 packet frames
+//	3.3 Mbit/s sustained, 1920x800 VP9        clean video, 614 packet frames
+//	11.2 Mbit/s sustained, 1920x800 VP8       no usable picture
+//	46.1 Mbit/s sustained, 1280x534 VP9       no picture
+//
+// So anything up to a bit over 3 Mbit/s is known good and the failures start
+// an order of magnitude higher. The comfortable ceiling sits above the
+// measured good cases with room to spare, and the marginal band covers the
+// untested gap rather than pretending to know where exactly it breaks.
 const (
-	bitrateComfortable = 2_500_000
-	bitrateMarginal    = 6_000_000
+	bitrateComfortable = 4_000_000
+	bitrateMarginal    = 8_000_000
 
-	// Above this many RTP packets, a single frame is a burst worth warning
-	// about even when the average bitrate looks acceptable.
-	burstyFrameManyPackets = 60
+	// Frames of this many RTP packets are worth mentioning, but note that the
+	// player paces a frame's packets across its interval, and files with 614
+	// packet frames have streamed cleanly. This is a heads-up, not a fault:
+	// no failure has yet been traced to burst size alone since pacing landed.
+	burstyFrameManyPackets = 400
 
 	// A lost packet freezes the picture until the next keyframe, so a long gap
 	// between keyframes means a long freeze.
 	longKeyframeGap = 5 * time.Second
+
+	// The eyeson media server tops out at 25 fps, and anything above it is
+	// bitrate spent on frames that will not be shown.
+	maxServerFPS = 25.0
+
+	// A meeting tile is nowhere near 1080p wide. Downscaling is the most
+	// effective single lever on both bitrate and keyframe size.
+	preferredWidth = 1280
 
 	// Payload budget per RTP packet, mirroring rtpOutboundMTU minus the fixed
 	// 12 byte RTP header.
@@ -75,8 +100,10 @@ type checkReport struct {
 	keyframes        int
 	maxKeyframeGap   time.Duration
 	peakBitrate      float64
+	p95Bitrate       float64
 	avgBitrate       float64
 	fps              float64
+	fixedTimecodes   int
 }
 
 // checkFile inspects a file and reports whether it can be streamed, without
@@ -132,6 +159,7 @@ func inspect(path string) (*checkReport, error) {
 		seenKeyframe  bool
 		bytesPerSec   = map[int64]int64{}
 		audioTrackNum uint
+		fixer         = &timecodeFixer{}
 	)
 	if audioTrack != nil {
 		audioTrackNum = audioTrack.TrackNumber
@@ -144,24 +172,25 @@ func inspect(path string) (*checkReport, error) {
 		if packet.Timecode == webm.BadTC {
 			continue
 		}
-		second := int64(packet.Timecode / time.Second)
+		tc := fixer.fix(packet.Timecode)
+		second := int64(tc / time.Second)
 
 		switch packet.TrackNumber {
 		case videoTrack.TrackNumber:
 			report.frames++
 			report.videoBytes += int64(len(packet.Data))
 			bytesPerSec[second] += int64(len(packet.Data))
-			if packet.Timecode > lastTC {
-				lastTC = packet.Timecode
+			if tc > lastTC {
+				lastTC = tc
 			}
 			if packet.Keyframe {
 				report.keyframes++
 				if seenKeyframe {
-					if gap := packet.Timecode - lastKeyframe; gap > report.maxKeyframeGap {
+					if gap := tc - lastKeyframe; gap > report.maxKeyframeGap {
 						report.maxKeyframeGap = gap
 					}
 				}
-				lastKeyframe = packet.Timecode
+				lastKeyframe = tc
 				seenKeyframe = true
 			}
 			report.countPackets(packet)
@@ -174,6 +203,8 @@ func inspect(path string) (*checkReport, error) {
 			bytesPerSec[second] += int64(len(packet.Data))
 		}
 	}
+
+	report.fixedTimecodes = fixer.fixed
 
 	// The stretch after the final keyframe counts too: a file with a single
 	// keyframe at the start has no recovery point at all, which would
@@ -193,12 +224,37 @@ func inspect(path string) (*checkReport, error) {
 		report.avgBitrate = float64(report.videoBytes+report.audioBytes) * 8 / seconds
 		report.fps = float64(report.frames) / seconds
 	}
-	for _, b := range bytesPerSec {
-		if rate := float64(b) * 8; rate > report.peakBitrate {
-			report.peakBitrate = rate
-		}
-	}
+	report.peakBitrate, report.p95Bitrate = bitrateStats(bytesPerSec)
 	return report, nil
+}
+
+// bitrateStats returns the busiest second and the 95th percentile second.
+//
+// The percentile matters more than the peak for deciding whether a file is
+// streamable. A feature film contains scene cuts, and the keyframe at a cut
+// can be many times the size of an ordinary frame, so one second in a
+// perfectly reasonable 2 Mbit/s file can measure ten times that. Judging the
+// whole file by that second condemns files that play fine apart from a brief
+// glitch at the cut.
+func bitrateStats(bytesPerSec map[int64]int64) (peak, p95 float64) {
+	if len(bytesPerSec) == 0 {
+		return 0, 0
+	}
+	rates := make([]float64, 0, len(bytesPerSec))
+	for _, b := range bytesPerSec {
+		rates = append(rates, float64(b)*8)
+	}
+	sort.Float64s(rates)
+
+	peak = rates[len(rates)-1]
+	idx := int(math.Ceil(0.95*float64(len(rates)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(rates) {
+		idx = len(rates) - 1
+	}
+	return peak, rates[idx]
 }
 
 // countPackets tracks the largest frame and how many RTP packets it becomes.
@@ -220,6 +276,29 @@ func (r *checkReport) countPackets(packet webm.Packet) {
 		data = r.plan.videoRewrite(data, packet.Keyframe)
 	}
 	r.maxFramePackets = len(r.plan.videoPayloader.Payload(rtpPayloadBudget, data))
+}
+
+// sustained is the rate the verdict is based on: what the file asks for
+// continuously, rather than its single worst moment.
+func (r *checkReport) sustained() float64 {
+	return math.Max(r.avgBitrate, r.p95Bitrate)
+}
+
+// needsAdvice reports whether the file has anything worth acting on. A file
+// that streams cleanly should be left alone rather than handed an ffmpeg line.
+func (r *checkReport) needsAdvice() bool {
+	return r.plan == nil ||
+		r.sustained() > bitrateComfortable ||
+		r.spiky() ||
+		r.maxKeyframeGap > longKeyframeGap ||
+		r.fps > maxServerFPS+0.5 ||
+		(!r.hasAudio && r.audioID != "") ||
+		r.maxFramePackets > burstyFrameManyPackets
+}
+
+// spiky reports whether one second stands far above the rest of the file.
+func (r *checkReport) spiky() bool {
+	return r.peakBitrate > 2.5*r.sustained() && r.peakBitrate > bitrateMarginal
 }
 
 func mbit(bitsPerSecond float64) string {
@@ -259,16 +338,14 @@ func (r *checkReport) print() int {
 	}
 
 	// Bitrate
-	fmt.Printf("  Bitrate     %s average, %s peak second\n",
-		mbit(r.avgBitrate), mbit(r.peakBitrate))
-	if r.maxFramePackets > 0 {
-		qualifier := ""
-		if r.packetsEstimated {
-			qualifier = " estimated"
-		}
-		fmt.Printf("  Worst frame %d KB, %d RTP packets%s\n",
-			r.maxFrameBytes/1024, r.maxFramePackets, qualifier)
+	fmt.Printf("  Bitrate     %s average, %s sustained (95th percentile second)\n",
+		mbit(r.avgBitrate), mbit(r.p95Bitrate))
+	qualifier := ""
+	if r.packetsEstimated {
+		qualifier = " estimated"
 	}
+	fmt.Printf("  Worst case  %s in one second, largest frame %d KB (%d RTP packets%s)\n",
+		mbit(r.peakBitrate), r.maxFrameBytes/1024, r.maxFramePackets, qualifier)
 	if r.keyframes == 0 {
 		fmt.Printf("  Keyframes   none found\n")
 	} else {
@@ -294,6 +371,11 @@ func (r *checkReport) verdict() int {
 	if !r.hasAudio && r.audioID != "" {
 		warnings = append(warnings, r.audioNote)
 	}
+	if r.fps > maxServerFPS+0.5 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%.0f fps is above the 25 fps the media server supports, so some of the bitrate "+
+				"is spent on frames that will not be shown", r.fps))
+	}
 	if r.maxKeyframeGap > longKeyframeGap {
 		detail := fmt.Sprintf("the stream goes up to %s without a keyframe",
 			r.maxKeyframeGap.Round(time.Second))
@@ -306,26 +388,33 @@ func (r *checkReport) verdict() int {
 	}
 	if r.maxFramePackets > burstyFrameManyPackets {
 		warnings = append(warnings, fmt.Sprintf(
-			"the largest frame needs %d RTP packets, which is a heavy burst",
-			r.maxFramePackets))
+			"the largest frame needs %d RTP packets; the player paces these out, but it is "+
+				"a lot to push at once", r.maxFramePackets))
 	}
 
-	rate := math.Max(r.peakBitrate, r.avgBitrate)
+	rate := r.sustained()
 	exit := 0
+
+	// A short spike is a glitch, not a reason to reject the file.
+	if r.spiky() {
+		warnings = append(warnings, fmt.Sprintf(
+			"one second peaks at %s, far above the rest of the file, so expect a brief "+
+				"stutter there rather than a problem throughout", mbit(r.peakBitrate)))
+	}
 
 	switch {
 	case rate > bitrateMarginal:
 		fmt.Printf("  NOT RECOMMENDED\n")
-		fmt.Printf("  At %s this is far above what a meeting participant can send.\n", mbit(rate))
-		fmt.Printf("  Expect little or no picture. Re-encode before streaming.\n")
+		fmt.Printf("  At a sustained %s this is far above what a meeting participant\n", mbit(rate))
+		fmt.Printf("  can send. Expect little or no picture. Re-encode before streaming.\n")
 		exit = 1
 	case rate > bitrateComfortable:
 		fmt.Printf("  SHOULD WORK, WITH RISK\n")
-		fmt.Printf("  At %s this is on the high side. It will usually play, but a\n", mbit(rate))
-		fmt.Printf("  lost packet can freeze the picture until the next keyframe.\n")
+		fmt.Printf("  At a sustained %s this is on the high side. It will usually play,\n", mbit(rate))
+		fmt.Printf("  but a lost packet can freeze the picture until the next keyframe.\n")
 	default:
 		fmt.Printf("  LOOKS GOOD\n")
-		fmt.Printf("  %s is comfortably within what a meeting participant can send.\n", mbit(rate))
+		fmt.Printf("  A sustained %s is comfortably within what a meeting participant\n  can send.\n", mbit(rate))
 	}
 
 	if len(warnings) > 0 {
@@ -335,41 +424,67 @@ func (r *checkReport) verdict() int {
 		}
 	}
 
-	if exit != 0 || len(warnings) > 0 {
+	if r.needsAdvice() {
 		fmt.Printf("\n  Suggested:\n    %s\n", suggestedCommand(r, false))
 	}
 	fmt.Println()
 	return exit
 }
 
-// suggestedCommand builds an ffmpeg line that fixes whatever is wrong. The
-// video is only re-encoded when it has to be, since copying is far cheaper.
+// suggestedCommand builds an ffmpeg line that fixes whatever is actually
+// wrong, and only re-encodes what has to be re-encoded.
+//
+// H264 via x264 is the default when the video does need re-encoding. libvpx-vp9
+// in single pass VBR is both very slow and unreliable about hitting a bitrate
+// target, to the point of overshooting it by an order of magnitude, whereas
+// x264 holds the target and encodes many times faster. Baseline profile keeps
+// B-frames out of the stream, which keeps the timestamps monotonic.
+//
+// Resolution and frame rate come before any bitrate flag: they cut both the
+// sustained rate and the size of individual keyframes.
 func suggestedCommand(r *checkReport, mustTranscodeVideo bool) string {
 	in := filepath.Base(r.path)
 
-	videoArgs := "-c:v copy"
-	if mustTranscodeVideo {
-		videoArgs = "-c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -g 60"
-	} else if math.Max(r.peakBitrate, r.avgBitrate) > bitrateComfortable {
-		videoArgs = "-c:v libvpx-vp9 -b:v 2M -maxrate 2.5M -g 60"
-	} else if r.maxKeyframeGap > longKeyframeGap {
-		// Bitrate is fine, only the keyframe spacing needs fixing, and that
-		// still requires a re-encode.
-		videoArgs = "-c:v libvpx-vp9 -b:v 2M -g 60"
+	reencode := mustTranscodeVideo ||
+		r.sustained() > bitrateComfortable ||
+		r.spiky() ||
+		r.maxKeyframeGap > longKeyframeGap ||
+		r.fps > maxServerFPS+0.5
+
+	parts := []string{"ffmpeg", "-i", in}
+	out := "out" + filepath.Ext(in)
+	if out == "out" {
+		out = "out.webm"
 	}
 
-	audioArgs := "-an"
-	if r.audioID != "" {
-		if r.hasAudio {
-			audioArgs = "-c:a copy"
-		} else {
-			audioArgs = "-c:a libopus"
+	if !reencode {
+		parts = append(parts, "-c:v", "copy")
+	} else {
+		if r.width > preferredWidth {
+			parts = append(parts, "-vf", fmt.Sprintf("scale=%d:-2", preferredWidth))
 		}
-	}
-
-	out := "out.webm"
-	if ext := filepath.Ext(in); ext == ".mkv" {
+		if r.fps > maxServerFPS+0.5 {
+			parts = append(parts, "-r", "25")
+		}
+		parts = append(parts,
+			"-c:v", "libx264", "-preset", "veryfast", "-profile:v", "baseline",
+			"-b:v", "2M", "-maxrate", "2.5M", "-bufsize", "4M",
+			"-g", "50", "-pix_fmt", "yuv420p")
+		// H264 cannot go in a .webm container.
 		out = "out.mkv"
 	}
-	return fmt.Sprintf("ffmpeg -i %s %s %s %s", in, videoArgs, audioArgs, out)
+
+	switch {
+	case r.audioID == "":
+		parts = append(parts, "-an")
+	case r.hasAudio && out == "out.mkv" && filepath.Ext(in) == ".webm":
+		// Opus copies cleanly into Matroska.
+		parts = append(parts, "-c:a", "copy")
+	case r.hasAudio:
+		parts = append(parts, "-c:a", "copy")
+	default:
+		parts = append(parts, "-c:a", "libopus", "-b:a", "96k", "-ac", "1")
+	}
+
+	return strings.Join(append(parts, out), " ")
 }
