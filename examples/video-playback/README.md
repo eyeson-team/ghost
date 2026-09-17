@@ -39,10 +39,6 @@ If the audio is in another format the video still plays, without sound. If the
 video is in another format, or the file is in another container such as MP4,
 playback is refused.
 
-H265/HEVC is not on the list: pion has no payloader for it, and sending it
-would mean maintaining one here. Transcode such a file, or wait for pion to
-support it.
-
 Any tool that writes Matroska can prepare a file, for example:
 
 ```sh
@@ -119,13 +115,3 @@ go build -o bin/ghost-player .
 ```
 
 Requires `github.com/eyeson-team/ghost/v2` v2.9.9 or newer.
-
-## Tests
-
-`fixtures.sh` generates the media the tests need with ffmpeg. The tests play
-files in real time, so the suite takes a couple of minutes.
-
-```sh
-./fixtures.sh
-go test ./...
-```
