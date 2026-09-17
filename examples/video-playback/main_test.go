@@ -47,6 +47,7 @@ func TestProbeAndIngest(t *testing.T) {
 		{"/tmp/media/av1_opus.webm", codecIDAV1, true, false},
 		{"/tmp/media/h264_opus.mkv", codecIDH264, true, false},
 		{"/tmp/media/h264_aac.mkv", codecIDH264, false, false},
+		{"/tmp/media/h265.mkv", codecIDH265, false, false},
 		{"/tmp/media/h264_aac.mp4", "", false, true},
 	}
 

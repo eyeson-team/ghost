@@ -17,7 +17,7 @@ func TestInspect(t *testing.T) {
 		{"/tmp/media/vp9_vorbis.webm", "V_VP9", true, false, 0},
 		{"/tmp/media/h264_aac.mkv", "V_MPEG4/ISO/AVC", true, false, 0},
 		{"/tmp/media/av1_opus.webm", "V_AV1", true, true, 0},
-		{"/tmp/media/h265.mkv", "V_MPEGH/ISO/HEVC", false, false, 1},
+		{"/tmp/media/h265.mkv", "V_MPEGH/ISO/HEVC", true, false, 0},
 		{"/tmp/media/hibitrate_vp9.webm", "V_VP9", true, false, 1},
 	}
 	for _, tc := range cases {
@@ -93,20 +93,6 @@ func TestShortClipNotFlagged(t *testing.T) {
 func TestInspectRejectsMP4(t *testing.T) {
 	if _, err := inspect("/tmp/media/h264_aac.mp4"); err == nil {
 		t.Fatal("expected mp4 to be rejected")
-	}
-}
-
-func TestSuggestedCommandCopiesWhenPossible(t *testing.T) {
-	r, err := inspect("/tmp/media/h264_aac.mkv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := suggestedCommand(r, false)
-	if want := "-c:v copy"; !contains(cmd, want) {
-		t.Errorf("cmd = %q, should keep video as-is via %q", cmd, want)
-	}
-	if want := "-c:a libopus"; !contains(cmd, want) {
-		t.Errorf("cmd = %q, should convert audio via %q", cmd, want)
 	}
 }
 

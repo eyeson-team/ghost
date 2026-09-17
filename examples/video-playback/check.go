@@ -5,7 +5,6 @@ import (
 	"math"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ebml-go/webm"
@@ -56,14 +55,20 @@ const (
 
 // codecDisplayNames maps container CodecIDs to names people recognise.
 var codecDisplayNames = map[string]string{
-	codecIDVP8:    "VP8",
-	codecIDVP9:    "VP9",
-	codecIDAV1:    "AV1",
-	codecIDH264:   "H264",
-	codecIDH265:   "H265",
-	codecIDOpus:   "Opus",
-	codecIDVorbis: "Vorbis",
-	codecIDAAC:    "AAC",
+	codecIDVP8:      "VP8",
+	codecIDVP9:      "VP9",
+	codecIDAV1:      "AV1",
+	codecIDH264:     "H264",
+	codecIDH265:     "H265",
+	codecIDOpus:     "Opus",
+	"A_AC3":         "AC-3",
+	"A_EAC3":        "E-AC-3",
+	"A_DTS":         "DTS",
+	"A_MPEG/L3":     "MP3",
+	"A_FLAC":        "FLAC",
+	"A_PCM/INT/LIT": "PCM",
+	codecIDVorbis:   "Vorbis",
+	codecIDAAC:      "AAC",
 }
 
 func displayName(codecID string) string {
@@ -111,10 +116,9 @@ type checkReport struct {
 func checkFile(path string) int {
 	report, err := inspect(path)
 	if err != nil {
-		fmt.Printf("%s\n\n", filepath.Base(path))
-		fmt.Printf("  Cannot read this file: %v\n\n", err)
-		fmt.Printf("  Only WebM and Matroska containers are supported. Remux first:\n")
-		fmt.Printf("    ffmpeg -i %s -c:v copy -c:a libopus out.mkv\n\n", filepath.Base(path))
+		fmt.Printf("\n%s\n\n", filepath.Base(path))
+		fmt.Printf("  CANNOT BE STREAMED\n")
+		fmt.Printf("  %v\n\n", err)
 		return 1
 	}
 	return report.print()
@@ -284,18 +288,6 @@ func (r *checkReport) sustained() float64 {
 	return math.Max(r.avgBitrate, r.p95Bitrate)
 }
 
-// needsAdvice reports whether the file has anything worth acting on. A file
-// that streams cleanly should be left alone rather than handed an ffmpeg line.
-func (r *checkReport) needsAdvice() bool {
-	return r.plan == nil ||
-		r.sustained() > bitrateComfortable ||
-		r.spiky() ||
-		r.maxKeyframeGap > longKeyframeGap ||
-		r.fps > maxServerFPS+0.5 ||
-		(!r.hasAudio && r.audioID != "") ||
-		r.maxFramePackets > burstyFrameManyPackets
-}
-
 // spiky reports whether one second stands far above the rest of the file.
 func (r *checkReport) spiky() bool {
 	return r.peakBitrate > 2.5*r.sustained() && r.peakBitrate > bitrateMarginal
@@ -319,10 +311,16 @@ func (r *checkReport) print() int {
 	}
 	fmt.Println()
 
-	// Video
-	if r.plan != nil {
+	// Video. A codec the media server accepts but whose configuration could
+	// not be read is a different problem from one it cannot take at all.
+	_, knownCodec := supportedVideoCodecs[r.videoID]
+	switch {
+	case r.plan != nil:
 		fmt.Printf("  Video       %s, supported\n", displayName(r.videoID))
-	} else {
+	case knownCodec:
+		fmt.Printf("  Video       %s, supported, but this file could not be read\n",
+			displayName(r.videoID))
+	default:
 		fmt.Printf("  Video       %s, NOT supported\n", displayName(r.videoID))
 	}
 
@@ -358,23 +356,20 @@ func (r *checkReport) print() int {
 }
 
 func (r *checkReport) verdict() int {
-	var warnings []string
+	var notes []string
 
 	if r.plan == nil {
-		fmt.Printf("  WILL NOT STREAM\n")
+		fmt.Printf("  CANNOT BE STREAMED\n")
 		fmt.Printf("  %v\n\n", r.planErr)
-		fmt.Printf("  Re-encode the video:\n")
-		fmt.Printf("    %s\n\n", suggestedCommand(r, true))
 		return 1
 	}
 
 	if !r.hasAudio && r.audioID != "" {
-		warnings = append(warnings, r.audioNote)
+		notes = append(notes, r.audioNote)
 	}
 	if r.fps > maxServerFPS+0.5 {
-		warnings = append(warnings, fmt.Sprintf(
-			"%.0f fps is above the 25 fps the media server supports, so some of the bitrate "+
-				"is spent on frames that will not be shown", r.fps))
+		notes = append(notes, fmt.Sprintf(
+			"%.0f fps is above the 25 fps the media server supports", r.fps))
 	}
 	if r.maxKeyframeGap > longKeyframeGap {
 		detail := fmt.Sprintf("the stream goes up to %s without a keyframe",
@@ -383,108 +378,42 @@ func (r *checkReport) verdict() int {
 			detail = fmt.Sprintf("there is only one keyframe, at the start, leaving %s with no "+
 				"recovery point", r.maxKeyframeGap.Round(time.Second))
 		}
-		warnings = append(warnings,
-			detail+", so a lost packet can freeze the picture that long")
+		notes = append(notes, detail+", so a lost packet can freeze the picture that long")
+	}
+	if r.spiky() {
+		notes = append(notes, fmt.Sprintf(
+			"one second peaks at %s, well above the rest of the file", mbit(r.peakBitrate)))
 	}
 	if r.maxFramePackets > burstyFrameManyPackets {
-		warnings = append(warnings, fmt.Sprintf(
-			"the largest frame needs %d RTP packets; the player paces these out, but it is "+
-				"a lot to push at once", r.maxFramePackets))
+		notes = append(notes, fmt.Sprintf(
+			"the largest frame needs %d RTP packets, which is a lot to send at once",
+			r.maxFramePackets))
 	}
 
 	rate := r.sustained()
 	exit := 0
 
-	// A short spike is a glitch, not a reason to reject the file.
-	if r.spiky() {
-		warnings = append(warnings, fmt.Sprintf(
-			"one second peaks at %s, far above the rest of the file, so expect a brief "+
-				"stutter there rather than a problem throughout", mbit(r.peakBitrate)))
-	}
-
 	switch {
 	case rate > bitrateMarginal:
-		fmt.Printf("  NOT RECOMMENDED\n")
-		fmt.Printf("  At a sustained %s this is far above what a meeting participant\n", mbit(rate))
-		fmt.Printf("  can send. Expect little or no picture. Re-encode before streaming.\n")
+		fmt.Printf("  TOO HEAVY TO STREAM\n")
+		fmt.Printf("  A sustained %s is more than a meeting participant can send.\n", mbit(rate))
+		fmt.Printf("  Expect little or no picture.\n")
 		exit = 1
 	case rate > bitrateComfortable:
-		fmt.Printf("  SHOULD WORK, WITH RISK\n")
-		fmt.Printf("  At a sustained %s this is on the high side. It will usually play,\n", mbit(rate))
-		fmt.Printf("  but a lost packet can freeze the picture until the next keyframe.\n")
+		fmt.Printf("  SHOULD STREAM, WITH SOME RISK\n")
+		fmt.Printf("  A sustained %s is on the high side. It will usually play, but a\n", mbit(rate))
+		fmt.Printf("  lost packet can freeze the picture until the next keyframe.\n")
 	default:
-		fmt.Printf("  LOOKS GOOD\n")
+		fmt.Printf("  READY TO STREAM\n")
 		fmt.Printf("  A sustained %s is comfortably within what a meeting participant\n  can send.\n", mbit(rate))
 	}
 
-	if len(warnings) > 0 {
+	if len(notes) > 0 {
 		fmt.Println()
-		for _, w := range warnings {
-			fmt.Printf("  - %s\n", w)
+		for _, n := range notes {
+			fmt.Printf("  - %s\n", n)
 		}
-	}
-
-	if r.needsAdvice() {
-		fmt.Printf("\n  Suggested:\n    %s\n", suggestedCommand(r, false))
 	}
 	fmt.Println()
 	return exit
-}
-
-// suggestedCommand builds an ffmpeg line that fixes whatever is actually
-// wrong, and only re-encodes what has to be re-encoded.
-//
-// H264 via x264 is the default when the video does need re-encoding. libvpx-vp9
-// in single pass VBR is both very slow and unreliable about hitting a bitrate
-// target, to the point of overshooting it by an order of magnitude, whereas
-// x264 holds the target and encodes many times faster. Baseline profile keeps
-// B-frames out of the stream, which keeps the timestamps monotonic.
-//
-// Resolution and frame rate come before any bitrate flag: they cut both the
-// sustained rate and the size of individual keyframes.
-func suggestedCommand(r *checkReport, mustTranscodeVideo bool) string {
-	in := filepath.Base(r.path)
-
-	reencode := mustTranscodeVideo ||
-		r.sustained() > bitrateComfortable ||
-		r.spiky() ||
-		r.maxKeyframeGap > longKeyframeGap ||
-		r.fps > maxServerFPS+0.5
-
-	parts := []string{"ffmpeg", "-i", in}
-	out := "out" + filepath.Ext(in)
-	if out == "out" {
-		out = "out.webm"
-	}
-
-	if !reencode {
-		parts = append(parts, "-c:v", "copy")
-	} else {
-		if r.width > preferredWidth {
-			parts = append(parts, "-vf", fmt.Sprintf("scale=%d:-2", preferredWidth))
-		}
-		if r.fps > maxServerFPS+0.5 {
-			parts = append(parts, "-r", "25")
-		}
-		parts = append(parts,
-			"-c:v", "libx264", "-preset", "veryfast", "-profile:v", "baseline",
-			"-b:v", "2M", "-maxrate", "2.5M", "-bufsize", "4M",
-			"-g", "50", "-pix_fmt", "yuv420p")
-		// H264 cannot go in a .webm container.
-		out = "out.mkv"
-	}
-
-	switch {
-	case r.audioID == "":
-		parts = append(parts, "-an")
-	case r.hasAudio && out == "out.mkv" && filepath.Ext(in) == ".webm":
-		// Opus copies cleanly into Matroska.
-		parts = append(parts, "-c:a", "copy")
-	case r.hasAudio:
-		parts = append(parts, "-c:a", "copy")
-	default:
-		parts = append(parts, "-c:a", "libopus", "-b:a", "96k", "-ac", "1")
-	}
-
-	return strings.Join(append(parts, out), " ")
 }

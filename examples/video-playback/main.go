@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
+	stdlog "log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -118,6 +120,12 @@ type videoSupport struct {
 
 // supportedVideoCodecs maps a container CodecID to the eyeson media server
 // codecs. The eyeson media server accepts VP8, VP9, AV1 and H264.
+//
+// H265 is left out on purpose. pion can depacketize it but ships no payloader,
+// so sending it would mean carrying an RFC 7798 packetizer in here. That is
+// media-stack work this example has no business owning; the codec can be added
+// once pion supports it. Its CodecID is still declared above so that --check
+// names the codec rather than printing the raw Matroska string.
 var supportedVideoCodecs = map[string]videoSupport{
 	codecIDVP8: {
 		ghostOption: ghost.WithForceVP8Codec(),
@@ -274,6 +282,12 @@ func newAVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
 		return nil, err
 	}
 
+	return lengthPrefixedToAnnexB(nalLengthSize, parameterSets), nil
+}
+
+// lengthPrefixedToAnnexB converts length prefixed NAL units to start code
+// prefixed ones, injecting the parameter sets ahead of every keyframe.
+func lengthPrefixedToAnnexB(nalLengthSize int, parameterSets []byte) frameRewriter {
 	return func(frame []byte, keyframe bool) []byte {
 		out := make([]byte, 0, len(frame)+len(parameterSets)+16)
 		if keyframe {
@@ -293,7 +307,7 @@ func newAVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
 			i += naluSize
 		}
 		return out
-	}, nil
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -405,8 +419,8 @@ func probe(videoFile string, disableAudio bool) (*streamPlan, error) {
 
 	support, ok := supportedVideoCodecs[videoTrack.CodecID]
 	if !ok {
-		return nil, fmt.Errorf("video codec %q is not supported by the eyeson media server "+
-			"(supported: VP8, VP9, AV1, H264) - transcode the file first",
+		return nil, fmt.Errorf("video codec %q cannot be streamed "+
+			"(supported: VP8, VP9, AV1, H264)",
 			videoTrack.CodecID)
 	}
 	payloader, rewrite, err := support.build(videoTrack.CodecPrivate)
@@ -919,7 +933,19 @@ func initLogging() {
 	}
 }
 
+// silenceLibraryLogging mutes the standard logger.
+//
+// The webm parser writes a line through it for every block marked discardable,
+// which on some files is tens of thousands of lines drowning out everything
+// else. Nothing in this program logs through the standard logger; all of our
+// own output goes through zerolog.
+func silenceLibraryLogging() {
+	stdlog.SetOutput(io.Discard)
+}
+
 func main() {
+	silenceLibraryLogging()
+
 	log.Logger = log.Output(
 		zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05.000"})
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
@@ -930,16 +956,11 @@ func main() {
 	rootCommand.SetVersionTemplate(`{{.Version}}`)
 	rootCommand.Long = `ghost-player streams a local video file into an eyeson meeting.
 
-Input must be a WebM/Matroska file whose codecs the eyeson media server
-accepts: VP8, VP9, AV1 or H264 video, and Opus audio. Nothing is transcoded,
-frames are passed through as they are stored in the file.
+Input must be a WebM or Matroska file. Video can be VP8, VP9, AV1 or H264;
+audio must be Opus. If the audio is in another format the video still plays,
+without sound.
 
-If the audio codec does not match, playback continues without audio.
-
-To prepare an arbitrary file, remux (fast, no quality loss) with:
-  ffmpeg -i input.mp4 -c:v copy -c:a libopus out.mkv
-or transcode the video as well if its codec is not in the list above:
-  ffmpeg -i input.mov -c:v libvpx-vp9 -c:a libopus out.webm`
+Use --check to report on a file without connecting to a meeting.`
 
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "ghost-player", "User name to use")

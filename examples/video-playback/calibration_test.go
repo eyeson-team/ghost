@@ -22,12 +22,12 @@ func TestVerdictMatchesObservedResults(t *testing.T) {
 		{
 			name: "vp9 720p 1.5Mbit", avg: 1.4e6, p95: 1.5e6, peak: 1.6e6,
 			framePkts: 15, gap: 2500 * time.Millisecond,
-			observed: "clean", wantExit: 0, wantNoAdvice: true,
+			observed: "clean", wantExit: 0,
 		},
 		{
 			name: "h264 1280x534 3.1Mbit", avg: 2.1e6, p95: 3.1e6, peak: 4.2e6,
 			framePkts: 140, gap: 2100 * time.Millisecond,
-			observed: "clean, streams seamlessly", wantExit: 0, wantNoAdvice: true,
+			observed: "clean, streams seamlessly", wantExit: 0,
 		},
 		{
 			name: "vp9 1920x800 3.3Mbit spiky", avg: 2.3e6, p95: 3.3e6, peak: 31.2e6,
@@ -59,10 +59,6 @@ func TestVerdictMatchesObservedResults(t *testing.T) {
 			got := r.verdict()
 			if got != tc.wantExit {
 				t.Errorf("exit = %d, want %d (observed: %s)", got, tc.wantExit, tc.observed)
-			}
-			// A file that streams cleanly should not be told to re-encode.
-			if tc.wantNoAdvice && r.needsAdvice() {
-				t.Errorf("advised a re-encode for a file that streams cleanly (%s)", tc.observed)
 			}
 		})
 	}
