@@ -234,7 +234,6 @@ empty meeting closes after a short while.
 ```sh
 go mod tidy    # fetch dependencies and create go.sum
 make           # build into bin/whip-server
-make test      # unit tests plus an end-to-end publish over loopback
 make build-platforms
 ```
 

@@ -6,10 +6,6 @@ default: build
 build:
 	@go build -o bin/whip-server whip-server
 
-.PHONY: test
-test:
-	@go test ./...
-
 .PHONY: build-platforms
 build-platforms:
 	# build mac without upx on arm64 cause it would crash
