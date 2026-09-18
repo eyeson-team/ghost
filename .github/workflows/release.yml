@@ -13,7 +13,7 @@ jobs:
       matrix:
         goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
-        example: [rtsp-client, rtmp-server, video-playback]
+        example: [rtsp-client, rtmp-server, video-playback, whip-server]
         exclude:
           # Exclude arm combinations that might not be needed or cause issues
           - goos: windows
@@ -28,7 +28,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # every example pins its own toolchain in go.mod, so take it from
+          # there instead of hardcoding a version the modules have outgrown
+          go-version-file: examples/${{ matrix.example }}/go.mod
 
       - name: Install UPX
         run: |
@@ -55,6 +57,10 @@ jobs:
             "video-playback")
               echo "name=ghost-player" >> $GITHUB_OUTPUT
               echo "package=ghost-player" >> $GITHUB_OUTPUT
+              ;;
+            "whip-server")
+              echo "name=whip-server" >> $GITHUB_OUTPUT
+              echo "package=whip-server" >> $GITHUB_OUTPUT
               ;;
           esac
 
@@ -139,16 +145,17 @@ jobs:
           cat > release_notes.md << EOF
           ## Ghost Examples Release ${GITHUB_REF_NAME}
 
-          This release includes pre-built binaries for all three Ghost example applications:
+          This release includes pre-built binaries for all four Ghost example applications:
 
           ### 📦 Included Binaries
           - **rtsp-client**: RTSP client implementation
           - **rtmp-server**: RTMP server implementation  
           - **ghost-player**: Video playback example
+          - **whip-server**: WHIP ingest endpoint (OBS, GStreamer, ffmpeg, browsers)
 
           ### 🏗️ Build Information
           - Built from commit: ${GITHUB_SHA:0:7}
-          - Go version: 1.22
+          - Go version: taken from each example's go.mod (1.24)
           - Platforms: Linux, Windows, macOS
           - Architectures: amd64, arm64
 
