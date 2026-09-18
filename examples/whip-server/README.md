@@ -3,97 +3,165 @@
 A WHIP ingest endpoint that forwards a WebRTC stream into an eyeson meeting.
 
 ```
-OBS / GStreamer / browser ──WHIP──▶ whip-server ──ghost (SEPP + WebRTC)──▶ eyeson meeting
+OBS / GStreamer / browser ──WHIP──▶ whip-server ──ghost──▶ eyeson meeting
 ```
 
 WHIP ([WebRTC-HTTP Ingestion Protocol, RFC 9725](https://datatracker.ietf.org/doc/rfc9725/))
-is a very small HTTP handshake in front of a plain WebRTC connection: the sender
-POSTs an SDP offer, the server answers with an SDP answer, and from then on it is
-just WebRTC. That is the whole protocol - there is no WHIP media format, no WHIP
-packetisation.
+is a small HTTP handshake in front of a plain WebRTC connection: the sender posts
+an SDP offer, the server answers, and from then on it is just WebRTC.
 
-That is what makes this example cheap: the incoming media is already RTP with
-codecs the meeting server understands. The packets are handed straight to the
-ghost tracks - no decoding, no re-encoding, no jitter buffer. CPU usage is close
-to a memcpy.
+The incoming media already arrives as RTP in a codec the meeting understands, so
+the packets are passed straight through. No decoding, no re-encoding, no quality
+loss, and very little CPU.
+
+## Quick start
+
+Start the server with an API key, which creates or joins a meeting:
+
+```sh
+$ export API_KEY=<your api key>
+$ ./whip-server $API_KEY --room-id whip-test --bearer-token s3cr3t
+```
+
+A guest link works as well, if you want to publish into a meeting that already
+exists:
+
+```sh
+$ ./whip-server "https://app.eyeson.team/?guest=<token>"
+```
+
+The server prints the links to the meeting and opens the endpoint:
+
+```
+Guest-link: https://app.eyeson.team/?guest=...
+GUI-link: https://app.eyeson.team/...
+WHIP endpoint listening on http://:8100/whip
+Waiting for a WHIP sender, accepted video codecs: vp9,av1,vp8,h264,h265
+```
+
+Open the guest link in a browser, then point your sender at
+`http://<host>:8100/whip` and start streaming.
+
+## Sending to it
+
+### OBS Studio
+
+WHIP output is available since OBS 30. In **Settings → Stream**:
+
+| Field        | Value                                                          |
+| ------------ | -------------------------------------------------------------- |
+| Service      | `WHIP`                                                          |
+| Server       | `http://<host>:8100/whip`                                       |
+| Bearer Token | whatever you passed to `--bearer-token` (leave empty if unset)  |
+
+In **Settings → Output**, switch to *Advanced* and set:
+
+| Setting            | Value | Why                                                    |
+| ------------------ | ----- | ------------------------------------------------------ |
+| B-frames           | `0`   | the eyeson media server does not support B-frames      |
+| Keyframe interval  | `1` s | new participants need a keyframe to start rendering    |
+| Total layers       | `1`   | simulcast layers are not used and only cost bandwidth  |
+
+The B-frame setting is called *B-frames* for x264, *Max B-frames* for NVENC, and
+*B-Frames* for the Apple and AMD encoders. Leave it at `0` for all of them.
+
+OBS offers H264, HEVC and AV1 for WHIP, and all three are accepted out of the
+box. Audio is Opus, which OBS selects automatically.
+
+### GStreamer
+
+VP9 in, VP9 all the way into the meeting:
+
+```sh
+gst-launch-1.0 \
+  videotestsrc is-live=true ! videoconvert ! vp9enc deadline=1 keyframe-max-dist=60 ! \
+  rtpvp9pay ! 'application/x-rtp,media=video,encoding-name=VP9,payload=98,clock-rate=90000' ! whip.sink_0 \
+  audiotestsrc is-live=true ! audioconvert ! opusenc ! rtpopuspay ! \
+  'application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000,encoding-params=(string)2' ! whip.sink_1 \
+  whipsink name=whip whip-endpoint=http://127.0.0.1:8100/whip auth-token=s3cr3t
+```
+
+### Anything else
+
+Any WHIP client works: `ffmpeg -f whip`, Broadcast Box, or a few lines of browser
+JavaScript. A browser is the easiest way to send VP9 or AV1.
+
+When you encode H264 or H265 yourself, turn B-frames off there too, e.g. `-bf 0`
+in ffmpeg or `bframes=0` on the GStreamer `x264enc`.
+
+## Usage hints
+
+* **Turn off B-frames.** The eyeson media server does not support them. This
+  applies to H264 and H265; VP8, VP9 and AV1 do not use B-frames in WebRTC.
+* **Join the meeting before you start streaming.** A meeting with nobody in it
+  shuts down after a short while, and this server only joins once a sender
+  publishes.
+* **Keep the keyframe interval short**, one or two seconds. Participants who join
+  later see video as soon as the next keyframe arrives. `--pli-interval` also
+  asks the sender for one every few seconds.
+* **Restart the stream after you change the codec.** The video codec is agreed on
+  when the sender connects, so a new encoder setting only takes effect on the
+  next publish. Changing it makes the participant briefly rejoin the meeting.
+* **Give it a moment on the first publish.** The connection into the meeting is
+  established while your sender is already connecting, so the first video frames
+  reach the meeting a second or two after the sender reports success.
+* **Set bitrate and resolution in the sender.** Whatever it produces is what the
+  meeting gets, unchanged.
+* **One sender at a time.** A new publish takes over and closes the previous one,
+  which is what you want when a sender crashes and reconnects.
+* **Send a single layer.** Simulcast layers beyond the first are ignored.
+* **Fix the room** with `--room-id` if you want every run to land in the same
+  meeting, and protect the endpoint with `--bearer-token`.
 
 ## Codecs
 
-The video codec is negotiated with the sender rather than hardcoded. On a
-`POST`, the offer is parsed, the first codec from `--video-codecs` that the
-sender also offers wins, and the eyeson connection is then built with the
-matching ghost option (`WithForceVP9Codec`, `WithForceAV1Codec`, ...).
+The video codec is not fixed, it is agreed on with the sender. The first codec
+from `--video-codecs` that the sender can also produce wins:
 
 ```
---video-codecs vp9,av1,vp8,h264   (default)
+--video-codecs vp9,av1,vp8,h264,h265   (default)
 ```
 
-The server preference deliberately beats the sender preference: a browser that
-lists H264 first but can do VP9 will be answered with VP9. Supported names are
-`vp9`, `av1`, `vp8`, `h264` and `h265`.
+The server preference comes first, so a browser that would rather send H264 but
+can do VP9 is answered with VP9. Accepted names are `vp9`, `av1`, `vp8`, `h264`
+and `h265`. Senders that announce H265 as `HEVC` are understood as well.
 
-Audio is always Opus, and there is no negotiation to do: WebRTC senders offer
-Opus (plus G.711 and telephone-event), and AAC is not a WebRTC audio codec at
-all - OBS hardcodes Opus for its WHIP output. If a sender ever does offer
-something else and no Opus, the audio section is answered with port `0`, the
-session comes up video only, and a warning is logged:
+VP9 is used in profile 0, the profile every VP9 sender supports. Senders that
+offer several profiles are pinned to it automatically.
 
-```
-WARN Sender offers audio as [PCMU], only Opus can be forwarded. Publishing without audio.
-```
+Audio is always Opus. Every WebRTC sender offers it, so there is nothing to
+configure. If a sender offers no Opus at all, the session comes up video only.
 
-Forwarding G.711 is not an option here: the ghost audio track is created as an
-Opus track in `client.go`, so anything else would have to be transcoded.
+## Network setup
 
-Because ghost fixes the codec when the client is created, the meeting is joined
-**lazily** - only when the first sender publishes. If a later session needs a
-different codec, the ghost client is rebuilt, which means the participant briefly
-leaves and rejoins the meeting. Same codec, same session: the connection is
-reused.
+The sender connects to this server, so this server has to be reachable. On a
+local network that works out of the box. Two cases need a flag:
 
-## Reachability, STUN and TURN
-
-The sender dials this server, so the connection stands or falls with **our**
-candidates being reachable - not the sender's. By default the STUN and TURN
-servers the eyeson API returned for the room are reused for the ingest peer
-connection. They are already in hand, and unlike a bare public STUN server the
-TURN entry still works when both ends sit behind a symmetric NAT.
-
-The same servers can be handed to the sender via WHIP `Link` headers (RFC 9725
-§4.4) with `--advertise-ice`, on both the `OPTIONS` and the `POST` response. It
-is **off by default**: senders rarely need them for WHIP, and OBS is known to
-handle advertised TURN servers badly - it reads the headers but still prefers
-direct candidates and has no relay-only mode, so a TURN-only setup can hang for
-minutes before failing ([obs-studio#12790](https://github.com/obsproject/obs-studio/issues/12790)).
-Turn it on when your senders are ones that make good use of it.
-
-Servers are given as one list, credentials inline:
-
-```sh
---ice-servers stun:stun.l.google.com:19302
---ice-servers turn:user:pass@turn.example.com:3478?transport=udp,stun:stun.example.com:3478
---ice-servers none     # directly reachable, do not gather anything else
-```
-
-Setting the flag replaces the eyeson servers rather than adding to them.
-
-Answering a publish does not wait for ICE gathering to finish. A TURN server
-that is slow to allocate would otherwise delay every `POST`, so gathering is
-bounded at two seconds and the answer carries whatever has been gathered by
-then - host candidates are there immediately.
-
-Two deployment cases need more than that:
-
-* **Cloud VM behind 1:1 NAT** (AWS, GCP, Hetzner cloud): the machine only sees
-  its private address, so every host candidate is useless. `--public-ip 1.2.3.4`
-  rewrites them.
-* **Firewall**: `--udp-port-range 50000-50100` pins ICE to a range you can open.
+* **Cloud VM** (AWS, GCP, Hetzner and friends): the machine only knows its
+  private address, so tell it the public one with `--public-ip 1.2.3.4`.
+* **Firewall**: `--udp-port-range 50000-50100` keeps the media on a range you can
+  open.
 
 ```sh
 $ ./whip-server $API_KEY --public-ip 1.2.3.4 --udp-port-range 50000-50100
 ```
 
-## Usage
+By default the STUN and TURN servers of the eyeson meeting are used, which is the
+right choice in almost every setup. They can be replaced, with credentials given
+inline:
+
+```sh
+--ice-servers stun:stun.l.google.com:19302
+--ice-servers turn:user:pass@turn.example.com:3478?transport=udp,stun:stun.example.com:3478
+--ice-servers none     # server is directly reachable
+```
+
+`--advertise-ice` additionally offers these servers to the sender. It is off by
+default, because senders differ in how well they handle it.
+
+To serve the endpoint over https, pass `--tls-cert` and `--tls-key`.
+
+## All options
 
 ```sh
 $ ./whip-server --help
@@ -115,174 +183,51 @@ Flags:
       --room-id string            Room ID. If left empty, a new meeting will be created on each request
       --tls-cert string           certificate file to serve the WHIP endpoint via https
       --tls-key string            key file to serve the WHIP endpoint via https
-      --trace                     trace output
+      --trace                     everything --verbose has, plus the exchanged sdp and the data channel messages
       --udp-port-range string     restrict ice to a udp port range, e.g. 50000-50100
       --user string               User name to use (default "whip-test")
       --user-id string            User id to use
-  -v, --verbose                   verbose output
-      --video-codecs string       accepted video codecs, most preferred first (default "vp9,av1,vp8,h264")
+  -v, --verbose                   per session detail: timings, dropped packets, ice gathering
+      --video-codecs string       accepted video codecs, most preferred first (default "vp9,av1,vp8,h264,h265")
       --whip-listen-addr string   address the WHIP endpoint listens on (default ":8100")
       --whip-path string          http path of the WHIP endpoint (default "/whip")
       --widescreen                start room in widescreen mode (default true)
 ```
 
-Start it with either an API key (creates/joins a meeting) or a guest link (joins
-an existing one):
-
-```sh
-$ export API_KEY=<...>
-$ ./whip-server $API_KEY --room-id whip-test --bearer-token s3cr3t
-```
-
-It prints the GUI and guest links and opens the WHIP endpoint:
-
-```
-WHIP endpoint listening on http://:8100/whip
-Waiting for a WHIP sender, accepted video codecs: vp9,av1,vp8,h264
-```
-
-Note that the meeting has to be kept busy - if nobody is connected it shuts down
-after a short while. Since this example only joins once a sender publishes, that
-matters more than in the other examples: join with the printed guest link (muted)
-before you start streaming.
-
-## Sending to it
-
-### OBS Studio
-
-WHIP output is available since OBS 30. In `Settings → Stream`:
-
-| Field        | Value                            |
-| ------------ | -------------------------------- |
-| Service      | `WHIP`                           |
-| Server       | `http://<host>:8100/whip`        |
-| Bearer Token | whatever you passed to `--bearer-token` (leave empty if unset) |
-
-In `Settings → Output` (Advanced):
-
-* **Video encoder**: OBS offers H264, HEVC and AV1 for WHIP. H264 works out of
-  the box; AV1 requires `av1` to be in `--video-codecs` (it is, by default) and
-  the meeting server to accept it. OBS cannot send VP8 or VP9.
-* **Keyframe interval**: 1 or 2 seconds. WebRTC receivers need a keyframe to
-  start rendering.
-* **Total layers**: 1. OBS 32.1+ can send simulcast; extra layers are read and
-  dropped here, they would only waste upstream bandwidth.
-
-### GStreamer
-
-VP9 in, VP9 all the way into the meeting:
-
-```sh
-gst-launch-1.0 \
-  videotestsrc is-live=true ! videoconvert ! vp9enc deadline=1 keyframe-max-dist=60 ! \
-  rtpvp9pay ! 'application/x-rtp,media=video,encoding-name=VP9,payload=98,clock-rate=90000' ! whip.sink_0 \
-  audiotestsrc is-live=true ! audioconvert ! opusenc ! rtpopuspay ! \
-  'application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000,encoding-params=(string)2' ! whip.sink_1 \
-  whipsink name=whip whip-endpoint=http://127.0.0.1:8100/whip auth-token=s3cr3t
-```
-
-### Anything else
-
-Any WHIP client works as long as it offers one of the configured codecs:
-`ffmpeg -f whip`, Broadcast Box, or a few lines of browser JavaScript - a browser
-sender is the easiest way to get VP9 or AV1 in.
-
 ## Endpoint
 
-| Method    | Path            | Meaning                                        |
-| --------- | --------------- | ---------------------------------------------- |
-| `POST`    | `/whip`         | publish, body is the SDP offer, answers `201` with a `Location` header |
-| `OPTIONS` | `/whip`         | CORS preflight, advertises the eyeson STUN servers via `Link` headers |
-| `DELETE`  | `/whip/<id>`    | stop publishing                                |
-| `PATCH`   | `/whip/<id>`    | `405` - all candidates are already in the answer, no trickle ICE needed |
+| Method    | Path         | Meaning                                                      |
+| --------- | ------------ | ------------------------------------------------------------ |
+| `POST`    | `/whip`      | publish, body is the SDP offer, answers `201` with a `Location` header |
+| `OPTIONS` | `/whip`      | CORS preflight, advertises the STUN servers via `Link` headers |
+| `DELETE`  | `/whip/<id>` | stop publishing                                               |
+| `PATCH`   | `/whip/<id>` | `405`, all candidates are already in the answer               |
 
-`POST` answers `415` when nothing forwardable is on offer, and `503` when the
-meeting connection could not be established. Both `OPTIONS` and `POST` carry the
-ICE servers in `Link` headers.
-
-Only one publisher is active at a time. A new `POST` takes over and closes the
-previous session, which is what you want when a sender crashes and reconnects.
-
-## Files
-
-| File           | What is in it                                                  |
-| -------------- | -------------------------------------------------------------- |
-| `main.go`      | cli, room handling, wiring                                      |
-| `codecs.go`    | codec table, SDP offer parsing, preference resolution           |
-| `eyeson.go`    | the ghost client lifecycle, rebuilt when the codec changes      |
-| `ice.go`       | stun/turn config, NAT and port range settings, Link headers     |
-| `whip.go`      | the WHIP http endpoint and the RTP forwarding                   |
-
-The flow for one publish is: parse the offer → pick the codec → connect ghost
-with that codec and get the tracks → build the ingest peer connection with only
-that codec registered → answer → `OnTrack` copies RTP packets to the tracks. pion
-rewrites SSRC and payload type on write, so nothing else has to be touched.
-
-RTP header extensions are stripped before forwarding. They carry ids from the
-WHIP negotiation (transport-cc, abs-send-time, mid, rid) which mean nothing on
-the eyeson side, and ghost does not negotiate extensions at all.
-
-## Limitations, and where they come from
-
-* **Keyframes are requested on a timer.** When a participant joins the meeting,
-  the eyeson server sends a keyframe request (PLI) to ghost - but ghost drops the
-  `RTPSender` returned by `AddTrack` in `client.go`, so that request cannot be
-  forwarded to the WHIP sender. The workaround is `--pli-interval`, which asks
-  for a keyframe every few seconds regardless. Exposing the sender's RTCP stream
-  in ghost (something like `SetVideoKeyframeRequestedHandler`) would replace the
-  timer with the real thing and save bandwidth. That is a small change in the
-  ghost library and probably the single most useful one for this example.
-* **A codec change costs a rejoin.** Ghost builds its `MediaEngine` and
-  `PeerConnection` in `NewClient`, so the codec cannot be changed on a live
-  client. If ghost grew a renegotiation path, the codec swap would become
-  invisible in the meeting.
-* **The first seconds of a publish are silent.** The WHIP answer is sent
-  immediately and the meeting is joined in parallel, because senders time out
-  long before a cold ghost connect finishes. Packets that arrive before the
-  eyeson tracks exist are counted and dropped, so the first moment or two of a
-  cold start does not reach the meeting. Run with `-v` to see how long it took
-  and how many packets went:
-
-  ```
-  INFO  Meeting connection ready after 1.83s, forwarding starts now
-  DEBUG Dropped 182 video packets while the meeting connection was coming up
-  ```
-* **No bandwidth adaptation.** Bitrate and resolution are whatever the sender
-  produces, same as the rtmp-server example. REMB/TWCC feedback from eyeson is
-  not relayed back to the WHIP sender.
-* **Profiles are not checked.** Only codec names are matched, not fmtp details
-  such as VP9 `profile-id` or H264 `profile-level-id`. Ghost offers an empty
-  fmtp line to eyeson, so this has not been a problem, but an exotic sender
-  profile could still trip up the meeting server's decoder.
-* **Reconnects restart the RTP sequence.** A new session brings new sequence
-  numbers and timestamps on the same outgoing SSRC. Receivers usually recover
-  within a keyframe, but it is not seamless.
-* **Audio is Opus or nothing.** See above - transcoding is out of scope, and
-  ghost's audio track is fixed to Opus anyway.
-* **This is ingest only.** Pulling the meeting out again over WHEP would be a
-  separate example, built on `SetVideoReceivedHandler` /
-  `SetAudioReceivedHandler`.
+`POST` answers `415` when the sender offers no usable codec, and `503` when the
+meeting could not be joined.
 
 ## Troubleshooting
 
-Run with `-v` first, the timings in the log usually point straight at the cause.
+Run with `-v` first, the log usually points straight at the cause. `-v` shows the
+detail of each session, `--trace` adds the SDP that was exchanged with the
+sender.
 
-**The sender times out on the first publish but works on the second.** The
-sender gave up waiting for the answer while the meeting connection or ICE
-gathering was still running. Both are bounded now, but if you still see it,
-check how long `Meeting connection ready after ...` reports, and try
-`--ice-servers none` to take gathering out of the picture entirely.
+**Nothing connects from another machine.** The sender dials this server, so this
+server's addresses have to be reachable: `--public-ip` on a cloud VM,
+`--udp-port-range` plus a firewall rule, or a TURN server.
 
-**The sender connects but nothing shows in the meeting.** Check that a track was
-claimed (`WHIP track received`) and that the codec line matches what you expect.
-If the sender publishes simulcast, set it to a single layer.
+**The sender connects but the meeting stays empty.** Check the log for
+`WHIP track received` and the codec that was picked. If your sender uses
+simulcast, set it to a single layer.
 
-**Black tile for participants who join late.** Lower `--pli-interval`, or set a
-shorter keyframe interval in the sender.
+**Participants who join later see a black tile.** Shorten the keyframe interval
+in the sender, or lower `--pli-interval`.
 
-**Nothing connects at all from another machine.** The sender dials this server,
-so it is our candidates that must be reachable: `--public-ip` on a cloud VM,
-`--udp-port-range` plus a firewall rule, TURN if neither is possible.
+**Video stutters or shows artefacts.** Make sure B-frames are turned off in the
+encoder.
+
+**The meeting ends on its own.** Join it with the guest link before streaming, an
+empty meeting closes after a short while.
 
 ## Development
 
@@ -293,31 +238,16 @@ make test      # unit tests plus an end-to-end publish over loopback
 make build-platforms
 ```
 
-### Binary size
+The tests need neither an API key nor network access.
 
-`make` produces an 18 MB binary, which looks alarming next to the ~5 MB
-binaries published for the other examples. They are not built the same way:
+| File        | What is in it                                               |
+| ----------- | ----------------------------------------------------------- |
+| `main.go`   | cli, room handling, wiring                                   |
+| `codecs.go` | codec table, SDP offer parsing, preference resolution        |
+| `eyeson.go` | the ghost client lifecycle                                   |
+| `ice.go`    | stun/turn config, NAT and port range settings, Link headers  |
+| `whip.go`   | the WHIP http endpoint and the RTP forwarding                |
 
-| build                                 | size   |
-| ------------------------------------- | ------ |
-| `make` (plain `go build`)              | 18 MB  |
-| `go build -ldflags="-s -w"`            | 12 MB  |
-| `make build-platforms` (`-s -w` + upx) | 3.7 MB |
-
-`make build-platforms` is what produces release binaries, and it strips debug
-info and packs with upx. Built the same way, the video-playback example comes
-out at 17 MB plain and 12 MB stripped - within a rounding error of this one.
-
-There is no transcoding here to pay for. The weight is pion/webrtc and its DTLS
-and SRTP crypto, which every ghost example links in, plus the Go runtime. This
-example adds nothing heavy on top: `pion/sdp` and `pion/interceptor` already
-come in through pion/webrtc, and the only non-pion additions are cobra and
-zerolog, which the other examples use too.
-
-The tests need no API key and no network. They cover the SDP parsing, codec
-selection, Link header rendering and port range parsing, assert that a publish
-is answered without waiting for the meeting connection, and start the endpoint
-four times - with an OBS-like H264 sender, a VP9-only sender, and a sender with
-G.711 audio - to check that the right codec is picked, that a sender without
-Opus still gets a working video-only session, and that the RTP packets arrive at
-the target tracks.
+One publish runs as: parse the offer, pick the codec, connect ghost with that
+codec, answer the sender, then copy the incoming RTP packets onto the ghost
+tracks.

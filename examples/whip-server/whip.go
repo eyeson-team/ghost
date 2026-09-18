@@ -207,14 +207,19 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	offer := string(body)
 
+	logSDP("Offer from the WHIP sender", offer)
+
 	// Pick the codec first: it decides how the eyeson side is connected and
-	// which codec ends up in the answer.
-	offeredVideo, err := OfferedVideoCodecs(offer)
+	// which codec ends up in the answer. Formats are compared, not just codec
+	// names, because a sender may offer the same codec in a flavour the meeting
+	// server cannot decode - VP9 in a profile other than 0.
+	offeredVideo, err := OfferedVideoFormats(offer)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to parse the sdp offer")
 		http.Error(w, "invalid sdp offer", http.StatusBadRequest)
 		return
 	}
+	offeredVideoCodecs := VideoMimeTypes(offeredVideo)
 	offeredAudio, err := OfferedAudioCodecs(offer)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to parse the sdp offer")
@@ -233,10 +238,17 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 			"Publishing without audio.", offeredAudio)
 	}
 
+	// A codec that is offered but only in an unusable format looks exactly like
+	// a codec that was never offered, so say what happened to it.
+	for _, unusable := range UnusableVideoFormats(s.cfg.VideoCodecs, offeredVideo) {
+		log.Warn().Msgf("Ignoring %s, the meeting server cannot decode that format",
+			unusable)
+	}
+
 	codec, ok := SelectVideoCodec(s.cfg.VideoCodecs, offeredVideo)
 	switch {
 	case ok:
-		log.Info().Msgf("Sender offers video as %v, using %s", offeredVideo, codec.Name)
+		log.Info().Msgf("Sender offers video as %v, using %s", offeredVideoCodecs, codec.Name)
 	case len(offeredVideo) == 0 && forwardAudio:
 		// audio only sender. ghost always creates a video track, so a codec
 		// still has to be picked - take the preferred one, it stays silent.
@@ -247,7 +259,8 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no forwardable media on offer", http.StatusUnsupportedMediaType)
 		return
 	default:
-		log.Warn().Msgf("Sender offers video as %v, none of which is enabled", offeredVideo)
+		log.Warn().Msgf("Sender offers video as %v, none of which is usable",
+			offeredVideoCodecs)
 		http.Error(w, "no common video codec", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -342,11 +355,14 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	s.session = sess
 	s.mu.Unlock()
 
+	answerSDP := pc.LocalDescription().SDP
+	logSDP("Answer to the WHIP sender", answerSDP)
+
 	w.Header().Set("Content-Type", "application/sdp")
 	w.Header().Set("Location", s.resourceURL(r, sess.id))
 	s.setICELinkHeaders(w)
 	w.WriteHeader(http.StatusCreated)
-	if _, err := w.Write([]byte(pc.LocalDescription().SDP)); err != nil {
+	if _, err := w.Write([]byte(answerSDP)); err != nil {
 		log.Warn().Err(err).Msg("Failed to write sdp answer")
 	}
 
@@ -369,10 +385,15 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec) (*webrtc.PeerConn
 		{Type: "goog-remb"},
 	}
 
+	// The fmtp line is part of the match: with "profile-id=0" registered, a
+	// sender that offers VP9 twice (Chrome offers profile 0 and profile 2) is
+	// answered with the profile 0 payload type only, and the answer carries the
+	// fmtp line so the sender knows which one to use.
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{
 			MimeType:     codec.MimeType,
 			ClockRate:    90000,
+			SDPFmtpLine:  codec.FmtpLine,
 			RTCPFeedback: videoFeedback,
 		},
 		PayloadType: 96,
@@ -546,6 +567,32 @@ func (s *WHIPServer) requestKeyframes(pc *webrtc.PeerConnection, track *webrtc.T
 //
 // helpers
 //
+
+// logSDP writes one side of the WHIP handshake to the trace log. The session
+// description is printed as an indented block: it is the one log message where
+// the line breaks carry the meaning.
+//
+// This is trace rather than debug because it is a raw protocol dump, and
+// because nothing is built when the level is off - it runs on every publish and
+// an offer with all its candidates is a few kilobytes.
+func logSDP(what, sdp string) {
+	event := log.Trace()
+	if !event.Enabled() {
+		return
+	}
+
+	lines := strings.Split(strings.ReplaceAll(sdp, "\r\n", "\n"), "\n")
+	block := make([]string, 0, len(lines)+1)
+	block = append(block, "")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		block = append(block, "  "+line)
+	}
+
+	event.Msgf("%s:%s", what, strings.Join(block, "\n"))
+}
 
 func (s *WHIPServer) authorized(r *http.Request) bool {
 	if s.cfg.BearerToken == "" {

@@ -119,9 +119,9 @@ func (m *MeetingConnector) dial(codec VideoCodec) (*meetingConn, error) {
 		}
 	})
 
-	if verboseFlag {
+	if traceFlag {
 		client.SetDataChannelHandler(func(data []byte) {
-			log.Debug().Msgf("DC message: %s", string(data))
+			log.Trace().Msgf("DC message: %s", string(data))
 		})
 	}
 

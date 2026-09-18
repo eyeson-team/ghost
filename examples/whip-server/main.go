@@ -87,6 +87,10 @@ func (sl *Logger) Debug(format string, v ...interface{}) { log.Debug().Msgf(form
 // Trace logs a trace message.
 func (sl *Logger) Trace(format string, v ...interface{}) { log.Trace().Msgf(format, v...) }
 
+// initLogging maps the two flags onto zerolog levels. The split is what goes
+// into them: --verbose is the per session detail you want while something is
+// misbehaving, --trace adds the raw protocol dumps (the WHIP SDP, the data
+// channel traffic), which are too bulky to carry along by default.
 func initLogging() {
 	switch {
 	case traceFlag:
@@ -127,8 +131,8 @@ func main() {
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "do not forward the audio track")
 	rootCommand.Flags().BoolVarP(&exitOnDisconnectFlag, "exit-on-disconnect", "", false, "terminate the meeting when the WHIP sender disconnects")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
-	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
-	rootCommand.Flags().BoolVarP(&traceFlag, "trace", "", false, "trace output")
+	rootCommand.Flags().BoolVarP(&verboseFlag, "verbose", "v", false, "per session detail: timings, dropped packets, ice gathering")
+	rootCommand.Flags().BoolVarP(&traceFlag, "trace", "", false, "everything --verbose has, plus the exchanged sdp and the data channel messages")
 	rootCommand.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "no logging output")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
