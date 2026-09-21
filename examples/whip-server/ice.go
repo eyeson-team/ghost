@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,13 @@ type ICESettings struct {
 
 	// Advertise sends the servers to the sender via WHIP Link headers.
 	Advertise bool
+
+	// Lite runs the ingest agent as an ICE-lite agent: it gathers host
+	// candidates only, sends no connectivity checks of its own, and answers
+	// the ones the sender sends. That is how most media servers behave, and
+	// some senders only start sending once the server has declared itself
+	// lite. It requires this server to be directly reachable by the sender.
+	Lite bool
 }
 
 // ParseICEServers reads a comma separated list of ice server urls. Credentials
@@ -124,9 +132,29 @@ func (i ICESettings) ICEServers() []webrtc.ICEServer {
 	return servers
 }
 
-// SettingEngine applies the NAT and port range settings.
+// Validate checks the settings that can only fail much later otherwise - a
+// public ip that is not an ip is not noticed until the first sender publishes
+// and the answer cannot be built.
+func (i ICESettings) Validate() error {
+	if i.PublicIP == "" {
+		return nil
+	}
+	if net.ParseIP(i.PublicIP) == nil {
+		return fmt.Errorf("--public-ip expects an ip address like 1.2.3.4, got %q. "+
+			"it is written into the ice candidates, so a hostname or url cannot be used", i.PublicIP)
+	}
+	return nil
+}
+
+// SettingEngine applies the NAT, port range and ice mode settings.
 func (i ICESettings) SettingEngine() (webrtc.SettingEngine, error) {
 	engine := webrtc.SettingEngine{}
+
+	if i.Lite {
+		// A lite agent keeps its host candidates and waits to be pinged, so
+		// stun and turn have nothing to contribute here.
+		engine.SetLite(true)
+	}
 
 	if i.PublicIP != "" {
 		engine.SetNAT1To1IPs([]string{i.PublicIP}, webrtc.ICECandidateTypeHost)

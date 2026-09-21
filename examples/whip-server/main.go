@@ -47,6 +47,7 @@ var (
 	videoCodecsFlag        string
 	iceServersFlag         string
 	advertiseICEFlag       bool
+	iceLiteFlag            bool
 	publicIPFlag           string
 	udpPortRangeFlag       string
 	pliIntervalFlag        int32
@@ -125,6 +126,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&videoCodecsFlag, "video-codecs", "", DefaultVideoCodecs, "accepted video codecs, most preferred first")
 	rootCommand.Flags().StringVarP(&iceServersFlag, "ice-servers", "", "", "comma separated ice servers, e.g. turn:user:pass@host:3478. defaults to the ones the eyeson api returns, \"none\" disables them")
 	rootCommand.Flags().BoolVarP(&advertiseICEFlag, "advertise-ice", "", false, "send the ice servers to senders via WHIP Link headers")
+	rootCommand.Flags().BoolVarP(&iceLiteFlag, "ice-lite", "", false, "run ice in lite mode: host candidates only, no checks of our own. for senders that expect the server to sit still and be pinged")
 	rootCommand.Flags().StringVarP(&publicIPFlag, "public-ip", "", "", "public ip to use in host candidates, for servers behind 1:1 NAT")
 	rootCommand.Flags().StringVarP(&udpPortRangeFlag, "udp-port-range", "", "", "restrict ice to a udp port range, e.g. 50000-50100")
 	rootCommand.Flags().Int32VarP(&pliIntervalFlag, "pli-interval", "", 3000, "interval in ms to request a keyframe from the WHIP sender, 0 disables it")
@@ -296,6 +298,7 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	settings := ICESettings{
 		PublicIP:  publicIPFlag,
 		Advertise: advertiseICEFlag,
+		Lite:      iceLiteFlag,
 	}
 
 	switch {
@@ -317,7 +320,25 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	settings.UDPPortMin = portMin
 	settings.UDPPortMax = portMax
 
+	if settings.Lite && len(settings.Servers) > 0 {
+		// A lite agent offers its host candidates and nothing else, so a stun
+		// or turn server would only slow the answer down.
+		log.Info().Msg("ICE: lite mode, ignoring the stun and turn servers")
+		settings.Servers = nil
+	}
+
+	if err := settings.Validate(); err != nil {
+		return settings, err
+	}
+
 	log.Info().Msgf("ICE: using %d server(s)", len(settings.Servers))
+
+	// A rewritten host candidate is only reachable if the router maps the same
+	// port through, which needs a fixed range to write the rule against.
+	if settings.PublicIP != "" && settings.UDPPortMin == 0 {
+		log.Warn().Msg("--public-ip without --udp-port-range: the media port is " +
+			"picked at random, so it cannot be forwarded through a router")
+	}
 
 	return settings, nil
 }

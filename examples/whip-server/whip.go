@@ -109,7 +109,10 @@ func (s *WHIPServer) Start() error {
 	mux.HandleFunc(s.cfg.Path, s.handleEndpoint)
 	mux.HandleFunc(s.cfg.Path+"/", s.handleResource)
 
-	server := &http.Server{Addr: s.cfg.ListenAddr, Handler: mux}
+	// logRequests writes one debug line per request. A sender whose PATCH or
+	// DELETE was turned down looks exactly like a sender that never called at
+	// all without it, see diagnostics.go.
+	server := &http.Server{Addr: s.cfg.ListenAddr, Handler: logRequests(mux)}
 
 	scheme := "http"
 	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
@@ -122,8 +125,11 @@ func (s *WHIPServer) Start() error {
 		return err
 	}
 
-	log.Info().Msgf("WHIP endpoint listening on %s://%s%s", scheme,
-		s.cfg.ListenAddr, s.cfg.Path)
+	// A sender on another machine needs an address it can reach, and ":8100"
+	// is not one, so every local address is spelled out, see netinfo.go.
+	for _, endpoint := range EndpointURLs(scheme, s.cfg.ListenAddr, s.cfg.Path) {
+		log.Info().Msgf("WHIP endpoint listening on %s", endpoint)
+	}
 
 	go func() {
 		var err error
@@ -177,12 +183,14 @@ func (s *WHIPServer) handleResource(w http.ResponseWriter, r *http.Request) {
 		log.Info().Msgf("WHIP session %s deleted by sender", resourceID)
 		w.WriteHeader(http.StatusOK)
 	case http.MethodPatch:
-		// Trickle ICE and ICE restart are optional in WHIP. This example
-		// answers with the full set of candidates right away, so senders never
-		// need to patch anything.
-		http.Error(w, "trickle ice is not supported", http.StatusMethodNotAllowed)
+		// Trickle ICE. This server answers with its own candidates right away,
+		// so nothing has to be patched in that direction - but a sender whose
+		// offer carries no candidates has no other way to say where its media
+		// arrives, and an ice-lite sender never sends checks that would let us
+		// find out. See trickle.go.
+		s.handleTrickle(w, r, resourceID)
 	default:
-		w.Header().Set("Allow", "DELETE, OPTIONS")
+		w.Header().Set("Allow", "DELETE, PATCH, OPTIONS")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
@@ -208,6 +216,12 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	offer := string(body)
 
 	logSDP("Offer from the WHIP sender", offer)
+
+	// An offer without candidates is not an error - they may still be trickled
+	// in - but if they never arrive the session just times out half a minute
+	// later, with nothing in the log that points at the cause. The summary also
+	// decides whether this session has to be answered as a lite agent.
+	offerICE := LogOfferICE(offer)
 
 	// Pick the codec first: it decides how the eyeson side is connected and
 	// which codec ends up in the answer. Formats are compared, not just codec
@@ -275,7 +289,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.closeSession(previous.id)
 	}
 
-	pc, err := s.newIngestPeerConnection(codec)
+	pc, err := s.newIngestPeerConnection(codec, offerICE.NeedsLiteAnswer())
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create ingest peer connection")
 		http.Error(w, "failed to create peer connection", http.StatusInternalServerError)
@@ -300,6 +314,10 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 			track.Kind(), track.Codec().MimeType, track.SSRC())
 		s.forwardTrack(sess, track)
 	})
+
+	// The connection state says that something failed, the ice state and the
+	// selected pair say where it got stuck. See diagnostics.go.
+	LogSessionICE(sess.id, pc)
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Info().Msgf("WHIP session %s connection state: %s", sess.id, state)
@@ -360,6 +378,9 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/sdp")
 	w.Header().Set("Location", s.resourceURL(r, sess.id))
+	// RFC 9725 section 4.2: a resource that takes trickled candidates carries
+	// an ETag, and some senders only try a PATCH once they have seen one.
+	w.Header().Set("ETag", `"`+sess.id+`"`)
 	s.setICELinkHeaders(w)
 	w.WriteHeader(http.StatusCreated)
 	if _, err := w.Write([]byte(answerSDP)); err != nil {
@@ -376,7 +397,11 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 // newIngestPeerConnection builds the peer connection that faces the WHIP
 // sender. Only the negotiated video codec and Opus are registered, which
 // guarantees that whatever arrives here can be forwarded to eyeson untouched.
-func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec) (*webrtc.PeerConnection, error) {
+//
+// lite answers this one session as an ice lite agent, even when the server was
+// not started with --ice-lite: the offer left no other way to connect. See
+// OfferICE.NeedsLiteAnswer.
+func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webrtc.PeerConnection, error) {
 	m := &webrtc.MediaEngine{}
 
 	videoFeedback := []webrtc.RTCPFeedback{
@@ -418,7 +443,12 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec) (*webrtc.PeerConn
 		return nil, err
 	}
 
-	settingEngine, err := s.cfg.ICE.SettingEngine()
+	ice := s.cfg.ICE
+	if lite {
+		ice.Lite = true
+	}
+
+	settingEngine, err := ice.SettingEngine()
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +457,15 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec) (*webrtc.PeerConn
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
 		webrtc.WithSettingEngine(settingEngine))
 
+	// A lite agent gathers host candidates only, so stun and turn would just
+	// hold the answer up for nothing.
+	iceServers := ice.ICEServers()
+	if ice.Lite {
+		iceServers = nil
+	}
+
 	return api.NewPeerConnection(webrtc.Configuration{
-		ICEServers: s.cfg.ICE.ICEServers(),
+		ICEServers: iceServers,
 	})
 }
 
