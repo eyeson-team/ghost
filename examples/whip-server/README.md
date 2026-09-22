@@ -91,13 +91,31 @@ JavaScript. A browser is the easiest way to send VP9 or AV1.
 When you encode H264 or H265 yourself, turn B-frames off there too, e.g. `-bf 0`
 in ffmpeg or `bframes=0` on the GStreamer `x264enc`.
 
+## Dry run
+
+`--dry-run` opens the WHIP endpoint without joining a meeting, so a sender can
+be set up and tested before there is a meeting to publish into:
+
+```sh
+$ ./whip-server --dry-run
+```
+
+No API key and no guest link are needed. It prints the same endpoint urls,
+answers publishes the same way, and reports each sender as it connects and
+disconnects again, until you stop it with ctrl-c. The media is discarded.
+
+Everything in front of the meeting runs as it does in a real session - the same
+bearer token, the same codec negotiation, the same ICE - so a sender that
+connects here connects later. Without a meeting there are no eyeson STUN and
+TURN servers to inherit; pass `--ice-servers` if your setup needs them.
+
 ## Usage hints
 
 * **Turn off B-frames.** The eyeson media server does not support them. This
   applies to H264 and H265; VP8, VP9 and AV1 do not use B-frames in WebRTC.
 * **Join the meeting before you start streaming.** A meeting with nobody in it
   shuts down after a short while, and this server only joins once a sender
-  publishes.
+  publishes. Use `--dry-run` to set the sender up beforehand, without a meeting.
 * **Keep the keyframe interval short**, one or two seconds. Participants who join
   later see video as soon as the next keyframe arrives. `--pli-interval` also
   asks the sender for one every few seconds.
@@ -203,6 +221,7 @@ Flags:
       --api-endpoint string       Set api-endpoint (default "https://api.eyeson.team")
       --bearer-token string       if set, senders must provide this token as an Authorization: Bearer header
       --custom-ca string          custom CA file
+      --dry-run                   open the WHIP endpoint without joining a meeting: report senders as they connect and discard their media. needs no api key
       --exit-on-disconnect        terminate the meeting when the WHIP sender disconnects
       --ice-lite                  run ice in lite mode: host candidates only, no checks of our own
       --ice-servers string        comma separated ice servers, e.g. turn:user:pass@host:3478. defaults to the ones the eyeson api returns, "none" disables them
@@ -254,7 +273,9 @@ every trickled candidate.
 
 **Nothing connects from another machine.** The sender dials this server, so this
 server's addresses have to be reachable: `--public-ip` on a cloud VM,
-`--udp-port-range` plus a firewall rule, or a TURN server.
+`--udp-port-range` plus a firewall rule, or a TURN server. `--dry-run` takes the
+meeting out of the picture while you sort this out, and says whether the sender
+got through.
 
 **The session is established and then fails half a minute later.** That is ICE
 never completing. Look for this warning:
@@ -323,6 +344,7 @@ The tests need neither an API key nor network access.
 | `whip.go`        | the WHIP http endpoint and the RTP forwarding                |
 | `trickle.go`     | the `PATCH` handler and the ICE fragment parser              |
 | `netinfo.go`     | the local addresses the endpoint is listed under             |
+| `dryrun.go`      | `--dry-run`: the endpoint without a meeting behind it        |
 | `diagnostics.go` | http request logging and the ICE level log lines             |
 
 One publish runs as: parse the offer, pick the codec, connect ghost with that

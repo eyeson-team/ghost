@@ -51,6 +51,7 @@ var (
 	publicIPFlag           string
 	udpPortRangeFlag       string
 	pliIntervalFlag        int32
+	dryRunFlag            bool
 	noAudioFlag            bool
 	exitOnDisconnectFlag   bool
 	widescreenFlag         bool
@@ -63,8 +64,24 @@ var (
 	rootCommand = &cobra.Command{
 		Use:   "whip-server [flags] $API_KEY|$GUEST_LINK",
 		Short: "WHIP ingest endpoint that forwards into an eyeson meeting",
-		Args:  cobra.MinimumNArgs(1),
+		// --dry-run never talks to the eyeson api, so it needs no credentials.
+		// Cobra parses the flags before it validates the arguments, so the flag
+		// can be consulted here.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if dryRunFlag || len(args) > 0 {
+				return nil
+			}
+			return fmt.Errorf("an api key or a guest link is required, " +
+				"or pass --dry-run to only open the endpoint")
+		},
 		Run: func(cmd *cobra.Command, args []string) {
+			if dryRunFlag {
+				if len(args) > 0 {
+					log.Info().Msg("Dry run: the api key or guest link is not used")
+				}
+				runDryRun()
+				return
+			}
 			whipServerExample(args[0], apiEndpointFlag, userFlag, roomIDFlag, userIDFlag)
 		},
 	}
@@ -130,6 +147,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&publicIPFlag, "public-ip", "", "", "public ip to use in host candidates, for servers behind 1:1 NAT")
 	rootCommand.Flags().StringVarP(&udpPortRangeFlag, "udp-port-range", "", "", "restrict ice to a udp port range, e.g. 50000-50100")
 	rootCommand.Flags().Int32VarP(&pliIntervalFlag, "pli-interval", "", 3000, "interval in ms to request a keyframe from the WHIP sender, 0 disables it")
+	rootCommand.Flags().BoolVarP(&dryRunFlag, "dry-run", "", false, "open the WHIP endpoint without joining a meeting: report senders as they connect and discard their media. needs no api key")
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "do not forward the audio track")
 	rootCommand.Flags().BoolVarP(&exitOnDisconnectFlag, "exit-on-disconnect", "", false, "terminate the meeting when the WHIP sender disconnects")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
@@ -294,6 +312,9 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 // reused - they are already there, they are close to the meeting, and unlike a
 // public stun server the turn entry also works when both ends sit behind a
 // symmetric NAT.
+//
+// The room may be nil, which is how a dry run gets here: no meeting was
+// joined, so there is nothing to inherit and only --ice-servers is left.
 func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	settings := ICESettings{
 		PublicIP:  publicIPFlag,
@@ -309,7 +330,7 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 			return settings, err
 		}
 		settings.Servers = servers
-	default:
+	case room != nil:
 		settings.Servers = eyesonICEServers(room)
 	}
 

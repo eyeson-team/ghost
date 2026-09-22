@@ -51,6 +51,11 @@ type WHIPConfig struct {
 	Connect ConnectFunc
 	// OnSessionEnded is called whenever an ingest session goes away.
 	OnSessionEnded func()
+	// OnSessionState, if set, is called with every state the ingest peer
+	// connection reaches. OnSessionEnded says that a session is over,
+	// this says how it was doing while it lasted - connected above all,
+	// which is the first moment a sender is known to have reached us.
+	OnSessionState func(id string, state webrtc.PeerConnectionState)
 }
 
 // WHIPServer implements a minimal WHIP (WebRTC-HTTP Ingestion Protocol)
@@ -321,6 +326,9 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Info().Msgf("WHIP session %s connection state: %s", sess.id, state)
+		if s.cfg.OnSessionState != nil {
+			s.cfg.OnSessionState(sess.id, state)
+		}
 		switch state {
 		case webrtc.PeerConnectionStateFailed,
 			webrtc.PeerConnectionStateDisconnected,

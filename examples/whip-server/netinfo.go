@@ -11,27 +11,32 @@ type LocalAddress struct {
 	IP        string
 }
 
-// LocalAddresses returns the addresses of the interfaces that are up, IPv4
-// first. Loopback and link local addresses are left out: 127.0.0.1 is listed
+// LocalAddresses returns the IPv4 addresses of the interfaces that are up.
+// Loopback and link local addresses are left out: 127.0.0.1 is listed
 // separately and a link local address is of no use to a sender.
+//
+// IPv6 is left out as well. A machine on a v6 network has several of them -
+// the stable one plus a temporary privacy address per rotation - and they push
+// the address a sender is actually going to use off the top of the startup log.
+// The endpoint still listens on them; they are just not advertised. A flag to
+// list them can be added when a sender needs one.
 func LocalAddresses() []LocalAddress {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 
-	v4 := []LocalAddress{}
-	v6 := []LocalAddress{}
+	addresses := []LocalAddress{}
 
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		addresses, err := iface.Addrs()
+		found, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
-		for _, address := range addresses {
+		for _, address := range found {
 			network, ok := address.(*net.IPNet)
 			if !ok {
 				continue
@@ -40,22 +45,21 @@ func LocalAddresses() []LocalAddress {
 			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 				continue
 			}
-			entry := LocalAddress{Interface: iface.Name, IP: ip.String()}
-			if ip.To4() != nil {
-				v4 = append(v4, entry)
+			if ip.To4() == nil {
 				continue
 			}
-			v6 = append(v6, LocalAddress{Interface: iface.Name, IP: ip.String()})
+			addresses = append(addresses, LocalAddress{Interface: iface.Name, IP: ip.String()})
 		}
 	}
 
-	return append(v4, v6...)
+	return addresses
 }
 
 // EndpointURLs renders the urls a WHIP sender can be pointed at. When the
 // server binds to every interface - the default ":8100" - the listen address
-// alone tells nobody on the network where to publish to, so every local
-// address is spelled out instead.
+// alone tells nobody on the network where to publish to, so every local IPv4
+// address is spelled out instead. Binding to one address explicitly is listed
+// as it was given, IPv6 included.
 func EndpointURLs(scheme, listenAddr, path string) []string {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
