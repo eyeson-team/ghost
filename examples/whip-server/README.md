@@ -62,13 +62,17 @@ In **Settings → Output**, switch to *Advanced* and set:
 | ------------------ | ----- | ------------------------------------------------------ |
 | B-frames           | `0`   | the eyeson media server does not support B-frames      |
 | Keyframe interval  | `1` s | new participants need a keyframe to start rendering    |
-| Total layers       | `1`   | simulcast layers are not used and only cost bandwidth  |
+| Total layers       | `1`   | only one simulcast layer is forwarded, see below       |
 
 The B-frame setting is called *B-frames* for x264, *Max B-frames* for NVENC, and
 *B-Frames* for the Apple and AMD encoders. Leave it at `0` for all of them.
 
 OBS offers H264, HEVC and AV1 for WHIP, and all three are accepted out of the
 box. Audio is Opus, which OBS selects automatically.
+
+More than one layer works as well, see [Simulcast](#simulcast), but the extra
+layers are encoded and uploaded only to be dropped here. Keep it at `1` unless
+you need the same OBS profile for another WHIP service too.
 
 ### GStreamer
 
@@ -129,7 +133,8 @@ TURN servers to inherit; pass `--ice-servers` if your setup needs them.
   meeting gets, unchanged.
 * **One sender at a time.** A new publish takes over and closes the previous one,
   which is what you want when a sender crashes and reconnects.
-* **Send a single layer.** Simulcast layers beyond the first are ignored.
+* **Send a single layer.** A simulcast sender works, but only one of its layers
+  reaches the meeting, so the others only cost CPU and upload bandwidth.
 * **Fix the room** with `--room-id` if you want every run to land in the same
   meeting, and protect the endpoint with `--bearer-token`.
 
@@ -151,6 +156,13 @@ offer several profiles are pinned to it automatically.
 
 Audio is always Opus. Every WebRTC sender offers it, so there is nothing to
 configure. If a sender offers no Opus at all, the session comes up video only.
+
+## Simulcast
+
+Simulcast senders work: OBS with *Total layers* above `1`, for example. The
+meeting takes a single video stream, so only the layer with the highest bitrate
+is forwarded and the others are dropped. `--simulcast-rid` picks a layer by its
+rid instead.
 
 ## Network setup
 
@@ -231,6 +243,7 @@ Flags:
       --public-ip string          public ip to use in host candidates, for servers behind 1:1 NAT
   -q, --quiet                     no logging output
       --room-id string            Room ID. If left empty, a new meeting will be created on each request
+      --simulcast-rid string      simulcast layer to forward, by rid. "auto" takes the one with the highest bitrate (default "auto")
       --tls-cert string           certificate file to serve the WHIP endpoint via https
       --tls-key string            key file to serve the WHIP endpoint via https
       --trace                     everything --verbose has, plus the exchanged sdp and the data channel messages
@@ -313,11 +326,17 @@ any STUN means the sender skipped ICE altogether, which nothing on this side can
 repair.
 
 **The sender connects but the meeting stays empty.** Check the log for
-`WHIP track received` and the codec that was picked. If your sender uses
-simulcast, set it to a single layer.
+`WHIP track received` and the codec that was picked. A simulcast sender should
+produce one `WHIP track received` line per layer and a `Forwarding simulcast
+layer` line after it. If the log shows `Incoming unhandled RTP ssrc ... mid RTP
+Extensions required for Simulcast` instead, the answer went out without the
+`mid` and `rid` header extensions: check with `--trace` that the answer's video
+section has `a=extmap` lines for `sdes:mid` and `sdes:rtp-stream-id`.
 
 **Participants who join later see a black tile.** Shorten the keyframe interval
-in the sender, or lower `--pli-interval`.
+in the sender, or lower `--pli-interval`. One keyframe is always requested when
+forwarding starts, even with `--pli-interval 0`; the flag only controls the
+periodic requests after it.
 
 **Video stutters or shows artefacts.** Make sure B-frames are turned off in the
 encoder.
@@ -342,6 +361,7 @@ The tests need neither an API key nor network access.
 | `eyeson.go`      | the ghost client lifecycle                                   |
 | `ice.go`         | stun/turn config, NAT and port range settings, Link headers  |
 | `whip.go`        | the WHIP http endpoint and the RTP forwarding                |
+| `simulcast.go`   | picking the one simulcast layer that is forwarded            |
 | `trickle.go`     | the `PATCH` handler and the ICE fragment parser              |
 | `netinfo.go`     | the local addresses the endpoint is listed under             |
 | `dryrun.go`      | `--dry-run`: the endpoint without a meeting behind it        |
@@ -349,4 +369,4 @@ The tests need neither an API key nor network access.
 
 One publish runs as: parse the offer, pick the codec, connect ghost with that
 codec, answer the sender, then copy the incoming RTP packets onto the ghost
-tracks.
+tracks. For a simulcast sender, one layer is picked before the copying starts.
