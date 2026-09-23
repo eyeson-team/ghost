@@ -67,6 +67,7 @@ func runDryRun() {
 		ICE:            iceSettings,
 		VideoCodecs:    codecs,
 		PLIInterval:    time.Duration(pliIntervalFlag) * time.Millisecond,
+		SimulcastRID:   simulcastRIDFlag,
 		Connect:        monitor.Connect,
 		OnSessionState: monitor.SessionState,
 		OnSessionEnded: monitor.SessionEnded,

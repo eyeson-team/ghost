@@ -15,9 +15,15 @@ import (
 	ghost "github.com/eyeson-team/ghost/v2"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	log "github.com/rs/zerolog/log"
 )
+
+// sdesRepairRTPStreamIDURI is the header extension an rtx stream uses to name
+// the simulcast layer it repairs, RFC 8852. Spelled out because the pinned
+// pion/sdp has constants for mid and rid, but not yet for this one.
+const sdesRepairRTPStreamIDURI = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
 
 // iceGatherTimeout bounds how long the answer waits for ice candidates. A turn
 // server that is slow to allocate must not hold up a publish; host candidates
@@ -47,6 +53,9 @@ type WHIPConfig struct {
 	// PLIInterval defines how often a keyframe is requested from the sender.
 	// Zero disables the periodic request.
 	PLIInterval time.Duration
+	// SimulcastRID selects the simulcast layer to forward by its rid. Empty or
+	// "auto" picks the layer with the highest bitrate.
+	SimulcastRID string
 	// Connect provides the eyeson side tracks for the negotiated codec.
 	Connect ConnectFunc
 	// OnSessionEnded is called whenever an ingest session goes away.
@@ -82,11 +91,14 @@ type whipSession struct {
 	audio  ghost.RTPWriter
 	closed bool
 
-	// A sender may publish more than one video track (OBS simulcast, multi
-	// track WHIP). Only the first track per kind is forwarded, the rest is
-	// read and dropped.
+	// A sender may publish more than one video track (multi track WHIP).
+	// Only the first track per kind is forwarded, the rest is read and
+	// dropped. Simulcast layers go through the selector first, so the first
+	// video track to claim a target is the chosen layer.
 	videoTaken bool
 	audioTaken bool
+
+	simulcast *simulcastSelector
 }
 
 // NewWHIPServer creates a WHIP endpoint. Call Start to actually serve it.
@@ -306,6 +318,8 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		pc:    pc,
 		codec: codec,
 		ready: make(chan struct{}),
+
+		simulcast: newSimulcastSelector(s.cfg.SimulcastRID),
 	}
 
 	// Joining the meeting takes seconds, and the sender is waiting for this
@@ -446,6 +460,27 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		return nil, err
 	}
 
+	// Simulcast layers share one m-line and are told apart by the mid and rid
+	// header extensions. Without them in the answer the sender still sends
+	// every layer, but pion cannot map the ssrcs to the transceiver and drops
+	// them ("mid RTP Extensions required for Simulcast"). OBS offers both.
+	// The repaired rid is what an rtx stream of a layer would carry.
+	for _, extension := range []struct {
+		uri  string
+		kind webrtc.RTPCodecType
+	}{
+		{sdp.SDESMidURI, webrtc.RTPCodecTypeVideo},
+		{sdp.SDESRTPStreamIDURI, webrtc.RTPCodecTypeVideo},
+		{sdesRepairRTPStreamIDURI, webrtc.RTPCodecTypeVideo},
+		{sdp.SDESMidURI, webrtc.RTPCodecTypeAudio},
+	} {
+		if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{
+			URI: extension.uri,
+		}, extension.kind); err != nil {
+			return nil, err
+		}
+	}
+
 	interceptorRegistry := &interceptor.Registry{}
 	if err := webrtc.RegisterDefaultInterceptors(m, interceptorRegistry); err != nil {
 		return nil, err
@@ -506,8 +541,8 @@ func (s *WHIPServer) connectMeeting(sess *whipSession, forwardAudio bool) {
 
 // claimTarget returns the eyeson track this incoming track should be written
 // to, or nil when there already is one of that kind. A sender may publish more
-// than one video track (OBS simulcast, multi track WHIP); only the first per
-// kind is forwarded.
+// than one video track (multi track WHIP); only the first per kind is
+// forwarded. Simulcast layers only get here once they have been chosen.
 func (s *WHIPServer) claimTarget(sess *whipSession, track *webrtc.TrackRemote) ghost.RTPWriter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -535,6 +570,13 @@ func (s *WHIPServer) claimTarget(sess *whipSession, track *webrtc.TrackRemote) g
 // connection is still coming up: not reading would stall the receiver and its
 // RTCP. Those early packets are counted and dropped.
 func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) {
+	// A video track with a rid is one layer of a simulcast sender. All layers
+	// are measured, one is forwarded, see simulcast.go.
+	var layer *simulcastLayer
+	if track.Kind() == webrtc.RTPCodecTypeVideo && track.RID() != "" {
+		layer = sess.simulcast.add(track)
+	}
+
 	var target ghost.RTPWriter
 	claimed := false
 	dropped := 0
@@ -548,9 +590,17 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 			return
 		}
 
+		if layer != nil {
+			layer.bytes.Add(uint64(len(packet.Payload)))
+		}
+
 		if !claimed {
 			select {
 			case <-sess.ready:
+				if layer != nil && !sess.simulcast.isChosen(layer) {
+					// not decided yet, or another layer won
+					continue
+				}
 				claimed = true
 				target = s.claimTarget(sess, track)
 				if dropped > 0 {
@@ -594,16 +644,24 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 // requestKeyframes asks the sender for a fresh keyframe every PLIInterval.
 // ghost does not surface the keyframe requests coming from the eyeson server,
 // so a periodic request keeps late joiners from staring at a black tile.
+//
+// Forwarding usually starts in the middle of a group of pictures - always so for
+// a simulcast layer, which is only picked after it has been running for a
+// while - so one keyframe is asked for right away, whatever the interval.
 func (s *WHIPServer) requestKeyframes(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
+	pli := []rtcp.Packet{
+		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
+	}
+	if err := pc.WriteRTCP(pli); err != nil {
+		return
+	}
 	if s.cfg.PLIInterval <= 0 {
 		return
 	}
 	ticker := time.NewTicker(s.cfg.PLIInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if err := pc.WriteRTCP([]rtcp.Packet{
-			&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
-		}); err != nil {
+		if err := pc.WriteRTCP(pli); err != nil {
 			return
 		}
 	}

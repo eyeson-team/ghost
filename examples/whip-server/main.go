@@ -51,7 +51,8 @@ var (
 	publicIPFlag           string
 	udpPortRangeFlag       string
 	pliIntervalFlag        int32
-	dryRunFlag            bool
+	simulcastRIDFlag       string
+	dryRunFlag             bool
 	noAudioFlag            bool
 	exitOnDisconnectFlag   bool
 	widescreenFlag         bool
@@ -147,6 +148,7 @@ func main() {
 	rootCommand.Flags().StringVarP(&publicIPFlag, "public-ip", "", "", "public ip to use in host candidates, for servers behind 1:1 NAT")
 	rootCommand.Flags().StringVarP(&udpPortRangeFlag, "udp-port-range", "", "", "restrict ice to a udp port range, e.g. 50000-50100")
 	rootCommand.Flags().Int32VarP(&pliIntervalFlag, "pli-interval", "", 3000, "interval in ms to request a keyframe from the WHIP sender, 0 disables it")
+	rootCommand.Flags().StringVarP(&simulcastRIDFlag, "simulcast-rid", "", SimulcastAuto, "simulcast layer to forward, by rid. \"auto\" takes the one with the highest bitrate")
 	rootCommand.Flags().BoolVarP(&dryRunFlag, "dry-run", "", false, "open the WHIP endpoint without joining a meeting: report senders as they connect and discard their media. needs no api key")
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "do not forward the audio track")
 	rootCommand.Flags().BoolVarP(&exitOnDisconnectFlag, "exit-on-disconnect", "", false, "terminate the meeting when the WHIP sender disconnects")
@@ -269,15 +271,16 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 	defer connector.Close()
 
 	whipServer := NewWHIPServer(WHIPConfig{
-		ListenAddr:  whipListenAddrFlag,
-		Path:        whipPathFlag,
-		BearerToken: bearerTokenFlag,
-		TLSCertFile: tlsCertFlag,
-		TLSKeyFile:  tlsKeyFlag,
-		ICE:         iceSettings,
-		VideoCodecs: codecs,
-		PLIInterval: time.Duration(pliIntervalFlag) * time.Millisecond,
-		Connect:     connector.Connect,
+		ListenAddr:   whipListenAddrFlag,
+		Path:         whipPathFlag,
+		BearerToken:  bearerTokenFlag,
+		TLSCertFile:  tlsCertFlag,
+		TLSKeyFile:   tlsKeyFlag,
+		ICE:          iceSettings,
+		VideoCodecs:  codecs,
+		PLIInterval:  time.Duration(pliIntervalFlag) * time.Millisecond,
+		SimulcastRID: simulcastRIDFlag,
+		Connect:      connector.Connect,
 		OnSessionEnded: func() {
 			if !exitOnDisconnectFlag {
 				log.Info().Msg("WHIP session ended, waiting for the next sender")
