@@ -3,7 +3,7 @@ default: build
 
 .PHONY: build
 build:
-	@go build -o bin/rtsp-client main.go
+	@go build -o bin/rtsp-client .
 
 build-cgo:
 	CGO_ENABLED=0 go build  -a -installsuffix cgo -o bin/rtsp-client *.go
@@ -19,4 +19,3 @@ build-platforms:
 	bash build.sh build_n_pack linux amd64
 	bash build.sh build_n_pack linux arm
 	bash build.sh build_n_pack linux arm64
-
