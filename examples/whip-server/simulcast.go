@@ -126,3 +126,73 @@ func (s *simulcastSelector) choose(layer *simulcastLayer, reason string) {
 func (s *simulcastSelector) isChosen(layer *simulcastLayer) bool {
 	return s.chosen.Load() == layer
 }
+
+// Simulcast modes, see --simulcast.
+//
+// Decline is the default: only one stream is forwarded anyway, and a sender
+// that falls back to a single stream saves itself the encoding of layers that
+// would be dropped here. Not every sender falls back - OBS refuses to stream
+// with fewer layers than it is configured for, with a clear message - and
+// select is there for those.
+const (
+	// SimulcastSelect accepts simulcast and forwards one of the layers.
+	SimulcastSelect = "select"
+	// SimulcastDecline answers without simulcast, which tells the sender to
+	// send a single stream instead.
+	SimulcastDecline = "decline"
+)
+
+// ParseSimulcastMode checks the value of --simulcast.
+func ParseSimulcastMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case SimulcastSelect:
+		return SimulcastSelect, nil
+	case SimulcastDecline:
+		return SimulcastDecline, nil
+	default:
+		return "", fmt.Errorf("unknown simulcast mode %q, known are %s and %s",
+			mode, SimulcastSelect, SimulcastDecline)
+	}
+}
+
+// DeclineSimulcast removes simulcast from an offer before it is answered, and
+// reports whether there was any. pion builds the answer from what the offer
+// asked for, so without the rid and simulcast lines the answer carries no
+// simulcast either - which is how RFC 8853 section 5.3 lets an answerer turn
+// it down. A sender that follows JSEP then sends only its first encoding.
+//
+// The rid header extensions go too: once simulcast is declined there are no
+// rids to carry, and a packet that arrives with one anyway would be looked up
+// as a simulcast layer and dropped. The mid extension stays, it is what bundle
+// demultiplexing uses.
+func DeclineSimulcast(offer string) (string, bool) {
+	lineEnd := "\n"
+	if strings.Contains(offer, "\r\n") {
+		lineEnd = "\r\n"
+	}
+
+	lines := strings.Split(strings.ReplaceAll(offer, "\r\n", "\n"), "\n")
+	kept := make([]string, 0, len(lines))
+	found := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "a=simulcast:"):
+			found = true
+			continue
+		case strings.HasPrefix(trimmed, "a=rid:"):
+			continue
+		case strings.HasPrefix(trimmed, "a=extmap:") &&
+			(strings.Contains(trimmed, "sdes:rtp-stream-id") ||
+				strings.Contains(trimmed, "sdes:repaired-rtp-stream-id")):
+			continue
+		}
+		kept = append(kept, line)
+	}
+
+	if !found {
+		return offer, false
+	}
+	return strings.Join(kept, lineEnd), true
+}

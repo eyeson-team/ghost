@@ -53,6 +53,8 @@ type WHIPConfig struct {
 	// PLIInterval defines how often a keyframe is requested from the sender.
 	// Zero disables the periodic request.
 	PLIInterval time.Duration
+	// Simulcast is SimulcastSelect or SimulcastDecline, see simulcast.go.
+	Simulcast string
 	// SimulcastRID selects the simulcast layer to forward by its rid. Empty or
 	// "auto" picks the layer with the highest bitrate.
 	SimulcastRID string
@@ -233,6 +235,16 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	offer := string(body)
 
 	logSDP("Offer from the WHIP sender", offer)
+
+	if s.cfg.Simulcast == SimulcastDecline {
+		if declined, found := DeclineSimulcast(offer); found {
+			log.Info().Msg("The sender offers simulcast, answering without it " +
+				"so it sends a single stream. A sender that refuses that " +
+				"(OBS: \"accepted 0 simulcast layers\") has to be set to one " +
+				"layer, or this server run with --simulcast select")
+			offer = declined
+		}
+	}
 
 	// An offer without candidates is not an error - they may still be trickled
 	// in - but if they never arrive the session just times out half a minute

@@ -62,7 +62,7 @@ In **Settings → Output**, switch to *Advanced* and set:
 | ------------------ | ----- | ------------------------------------------------------ |
 | B-frames           | `0`   | the eyeson media server does not support B-frames      |
 | Keyframe interval  | `1` s | new participants need a keyframe to start rendering    |
-| Total layers       | `1`   | only one simulcast layer is forwarded, see below       |
+| Total layers       | `1`   | simulcast is declined by default, see below            |
 
 The B-frame setting is called *B-frames* for x264, *Max B-frames* for NVENC, and
 *B-Frames* for the Apple and AMD encoders. Leave it at `0` for all of them.
@@ -70,9 +70,8 @@ The B-frame setting is called *B-frames* for x264, *Max B-frames* for NVENC, and
 OBS offers H264, HEVC and AV1 for WHIP, and all three are accepted out of the
 box. Audio is Opus, which OBS selects automatically.
 
-More than one layer works as well, see [Simulcast](#simulcast), but the extra
-layers are encoded and uploaded only to be dropped here. Keep it at `1` unless
-you need the same OBS profile for another WHIP service too.
+With more than one layer, OBS stops right away with *WHIP server only accepted
+0 simulcast layers*. Set it to `1`, or see [Simulcast](#simulcast).
 
 ### GStreamer
 
@@ -133,8 +132,8 @@ TURN servers to inherit; pass `--ice-servers` if your setup needs them.
   meeting gets, unchanged.
 * **One sender at a time.** A new publish takes over and closes the previous one,
   which is what you want when a sender crashes and reconnects.
-* **Send a single layer.** A simulcast sender works, but only one of its layers
-  reaches the meeting, so the others only cost CPU and upload bandwidth.
+* **Send a single layer.** Only one stream reaches the meeting, so simulcast is
+  declined by default and extra layers would only cost CPU and upload bandwidth.
 * **Fix the room** with `--room-id` if you want every run to land in the same
   meeting, and protect the endpoint with `--bearer-token`.
 
@@ -159,10 +158,11 @@ configure. If a sender offers no Opus at all, the session comes up video only.
 
 ## Simulcast
 
-Simulcast senders work: OBS with *Total layers* above `1`, for example. The
-meeting takes a single video stream, so only the layer with the highest bitrate
-is forwarded and the others are dropped. `--simulcast-rid` picks a layer by its
-rid instead.
+Only one video stream is forwarded into the meeting, so simulcast is declined by
+default and the sender is asked for a single stream. Senders that do not fall
+back to one stream - OBS with *Total layers* above `1` - can be accepted with
+`--simulcast select`: all layers are received and the one with the highest
+bitrate is forwarded. `--simulcast-rid` picks a layer by its rid instead.
 
 ## Network setup
 
@@ -243,7 +243,8 @@ Flags:
       --public-ip string          public ip to use in host candidates, for servers behind 1:1 NAT
   -q, --quiet                     no logging output
       --room-id string            Room ID. If left empty, a new meeting will be created on each request
-      --simulcast-rid string      simulcast layer to forward, by rid. "auto" takes the one with the highest bitrate (default "auto")
+      --simulcast string          how to treat simulcast senders: "decline" answers without simulcast so the sender sends a single stream, "select" accepts it and forwards one layer (default "decline")
+      --simulcast-rid string      simulcast layer to forward with --simulcast select, by rid. "auto" takes the one with the highest bitrate (default "auto")
       --tls-cert string           certificate file to serve the WHIP endpoint via https
       --tls-key string            key file to serve the WHIP endpoint via https
       --trace                     everything --verbose has, plus the exchanged sdp and the data channel messages
@@ -326,12 +327,12 @@ any STUN means the sender skipped ICE altogether, which nothing on this side can
 repair.
 
 **The sender connects but the meeting stays empty.** Check the log for
-`WHIP track received` and the codec that was picked. A simulcast sender should
-produce one `WHIP track received` line per layer and a `Forwarding simulcast
-layer` line after it. If the log shows `Incoming unhandled RTP ssrc ... mid RTP
-Extensions required for Simulcast` instead, the answer went out without the
-`mid` and `rid` header extensions: check with `--trace` that the answer's video
-section has `a=extmap` lines for `sdes:mid` and `sdes:rtp-stream-id`.
+`WHIP track received` and the codec that was picked. If the sender publishes
+simulcast and the log shows `Incoming unhandled RTP ssrc`, it ignored the
+declined simulcast: set it to a single layer, or run with `--simulcast select`.
+
+**OBS says "WHIP server only accepted 0 simulcast layers".** Simulcast is
+declined by default. Set *Total layers* to `1`, or run with `--simulcast select`.
 
 **Participants who join later see a black tile.** Shorten the keyframe interval
 in the sender, or lower `--pli-interval`. One keyframe is always requested when

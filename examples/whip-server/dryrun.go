@@ -43,6 +43,12 @@ func runDryRun() {
 		return
 	}
 
+	simulcastMode, err := ParseSimulcastMode(simulcastFlag)
+	if err != nil {
+		log.Error().Err(err).Msg("Invalid --simulcast")
+		return
+	}
+
 	// No room, so there are no eyeson stun and turn servers to fall back on.
 	iceSettings, err := buildICESettings(nil)
 	if err != nil {
@@ -67,6 +73,7 @@ func runDryRun() {
 		ICE:            iceSettings,
 		VideoCodecs:    codecs,
 		PLIInterval:    time.Duration(pliIntervalFlag) * time.Millisecond,
+		Simulcast:      simulcastMode,
 		SimulcastRID:   simulcastRIDFlag,
 		Connect:        monitor.Connect,
 		OnSessionState: monitor.SessionState,

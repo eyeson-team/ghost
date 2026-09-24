@@ -51,6 +51,7 @@ var (
 	publicIPFlag           string
 	udpPortRangeFlag       string
 	pliIntervalFlag        int32
+	simulcastFlag          string
 	simulcastRIDFlag       string
 	dryRunFlag             bool
 	noAudioFlag            bool
@@ -148,7 +149,8 @@ func main() {
 	rootCommand.Flags().StringVarP(&publicIPFlag, "public-ip", "", "", "public ip to use in host candidates, for servers behind 1:1 NAT")
 	rootCommand.Flags().StringVarP(&udpPortRangeFlag, "udp-port-range", "", "", "restrict ice to a udp port range, e.g. 50000-50100")
 	rootCommand.Flags().Int32VarP(&pliIntervalFlag, "pli-interval", "", 3000, "interval in ms to request a keyframe from the WHIP sender, 0 disables it")
-	rootCommand.Flags().StringVarP(&simulcastRIDFlag, "simulcast-rid", "", SimulcastAuto, "simulcast layer to forward, by rid. \"auto\" takes the one with the highest bitrate")
+	rootCommand.Flags().StringVarP(&simulcastFlag, "simulcast", "", SimulcastDecline, "how to treat simulcast senders: \"decline\" answers without simulcast so the sender sends a single stream, \"select\" accepts it and forwards one layer")
+	rootCommand.Flags().StringVarP(&simulcastRIDFlag, "simulcast-rid", "", SimulcastAuto, "simulcast layer to forward with --simulcast select, by rid. \"auto\" takes the one with the highest bitrate")
 	rootCommand.Flags().BoolVarP(&dryRunFlag, "dry-run", "", false, "open the WHIP endpoint without joining a meeting: report senders as they connect and discard their media. needs no api key")
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "do not forward the audio track")
 	rootCommand.Flags().BoolVarP(&exitOnDisconnectFlag, "exit-on-disconnect", "", false, "terminate the meeting when the WHIP sender disconnects")
@@ -224,6 +226,12 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 		return
 	}
 
+	simulcastMode, err := ParseSimulcastMode(simulcastFlag)
+	if err != nil {
+		log.Error().Err(err).Msg("Invalid --simulcast")
+		return
+	}
+
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID,
 		customCAFileFlag, insecureSkipVerifyFlag)
 	if err != nil {
@@ -279,6 +287,7 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 		ICE:          iceSettings,
 		VideoCodecs:  codecs,
 		PLIInterval:  time.Duration(pliIntervalFlag) * time.Millisecond,
+		Simulcast:    simulcastMode,
 		SimulcastRID: simulcastRIDFlag,
 		Connect:      connector.Connect,
 		OnSessionEnded: func() {
