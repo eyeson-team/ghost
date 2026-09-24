@@ -365,12 +365,8 @@ func withHint(err error) string {
 
 // runRtspCheck probes rtspConnectURL and prints a report to stdout.
 // It returns false if the stream is not usable for forwarding.
-func runRtspCheck(rtspConnectURL string, codecH265 bool) bool {
+func runRtspCheck(rtspConnectURL string) bool {
 	r := &checkReport{}
-	wantCodec := "H264"
-	if codecH265 {
-		wantCodec = "H265"
-	}
 
 	checkStart := time.Now()
 	defer func() { r.finish(time.Since(checkStart)) }()
@@ -384,7 +380,6 @@ func runRtspCheck(rtspConnectURL string, codecH265 bool) bool {
 	}
 	r.info("url:       %s", (*url.URL)(u).Redacted())
 	r.sum("url", "%s", (*url.URL)(u).Redacted())
-	r.info("expecting: %s (forward mode would use --h265=%v)", wantCodec, codecH265)
 
 	host := u.Host
 	if u.Port() == "" {
@@ -475,11 +470,14 @@ func runRtspCheck(rtspConnectURL string, codecH265 bool) bool {
 	var fh265 *format.H265
 	mediaH265 := session.FindFormat(&fh265)
 
+	// same selection as the forward mode
+	codecH265, found := selectVideoTrack(session)
+	wantCodec := codecName(codecH265)
 	var selMedia *description.Media
 	var selFormat format.Format
-	if codecH265 && mediaH265 != nil {
+	if found && codecH265 {
 		selMedia, selFormat = mediaH265, fh265
-	} else if !codecH265 && mediaH264 != nil {
+	} else if found {
 		selMedia, selFormat = mediaH264, fh264
 	}
 
@@ -522,21 +520,13 @@ func runRtspCheck(rtspConnectURL string, codecH265 bool) bool {
 		}
 	}
 
-	switch {
-	case selMedia == nil && codecH265:
-		r.fail("no H265 track found")
-		if mediaH264 != nil {
-			r.info("an H264 track is present: start without --h265")
-		}
+	if selMedia == nil {
+		r.fail("no H264 or H265 video track found (source offers: %s)", offeredCodecs(session))
 		return false
-	case selMedia == nil:
-		r.fail("no H264 track found")
-		if mediaH265 != nil {
-			r.info("an H265 track is present: start with --h265")
-		}
-		return false
-	default:
-		r.ok("%s track available for forwarding", wantCodec)
+	}
+	r.ok("%s video track will be forwarded", wantCodec)
+	if mediaH264 != nil && mediaH265 != nil {
+		r.info("source offers H264 and H265, H264 is preferred")
 	}
 
 	// parameter sets in the SDP: the H264 forwarder prepends them to keyframes
@@ -706,7 +696,7 @@ wait:
 		}
 
 		if m.Type != description.MediaTypeVideo {
-			r.sum(key, "%s, ~%.0f kbit/s", ts.forma.Codec(), kbps)
+			r.sum(key, "%s, ~%.0f kbit/s (not forwarded)", ts.forma.Codec(), kbps)
 			continue
 		}
 
