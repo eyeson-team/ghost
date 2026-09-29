@@ -51,8 +51,8 @@ ffmpeg -i input.mp4 -c:v libx264 -c:a libopus -ac 1 output.mkv
 
 ## Checking a file first
 
-`--check` reports what a file contains and how well it is likely to stream. It
-reads the file only, and never joins a meeting:
+`--check` reports what a file contains and whether it can be played. It reads
+the file header only, and never joins a meeting:
 
 ```sh
 ghost-player --check clip.mkv
@@ -62,30 +62,22 @@ ghost-player --check clip.mkv
 clip.mkv
 
   Container   matroska, 12m14s
-  Resolution  1280x534 @ 24.0 fps
+  Resolution  1280x534 @ 24.00 fps
   Video       H264, supported
   Audio       Opus, supported
-  Bitrate     2.1 Mbit/s average, 3.1 Mbit/s sustained (95th percentile second)
-  Worst case  4.2 Mbit/s in one second, largest frame 160 KB (140 RTP packets)
-  Keyframes   453, longest stretch without one 2.1s
 
-  READY TO STREAM
-  A sustained 3.1 Mbit/s is comfortably within what a meeting participant
-  can send.
+  PLAYABLE
 ```
 
-The verdict is one of:
+The frame rate is shown only if the file's header declares one.
 
-| Verdict | Meaning | Exit code |
+| Result | Meaning | Exit code |
 | --- | --- | --- |
-| `READY TO STREAM` | should play well | 0 |
-| `SHOULD STREAM, WITH SOME RISK` | plays, but a lost packet may briefly freeze the picture | 0 |
-| `TOO HEAVY TO STREAM` | more bitrate than a participant can send; expect little or no picture | 1 |
-| `CANNOT BE STREAMED` | unsupported codec or container | 1 |
+| `PLAYABLE` | container and video codec are supported | 0 |
+| `NOT PLAYABLE` | unsupported container or video codec | 1 |
 
-Anything else worth knowing is listed underneath as a short note: audio that
-cannot be sent, a frame rate above the 25 fps the media server uses, long gaps
-between keyframes, or an unusually heavy second.
+An unsupported audio codec does not make a file unplayable: it is reported,
+and the video plays without sound.
 
 The exit codes make it usable as a gate:
 
@@ -97,7 +89,7 @@ ghost-player --check clip.mkv && ghost-player $API_KEY clip.mkv
 
 | Flag | |
 | --- | --- |
-| `--check` | Report on the file and exit, without connecting. |
+| `--check` | Report the file's container, resolution and codecs, then exit without connecting. |
 | `--loop` | Restart playback at the end of the file. Default on. |
 | `--no-audio` | Never send audio, even when the format matches. |
 | `--room-id` | Join a specific room instead of creating a meeting. |
