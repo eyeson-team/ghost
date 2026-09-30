@@ -44,16 +44,31 @@ var (
 	quietFlag              bool
 	customCAFileFlag       string
 	insecureSkipVerifyFlag bool
-	useH265CodecFlag       bool
+	checkFlag              bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
 		Short: "rtsp-client",
-		Args:  cobra.MinimumNArgs(2),
+		Example: `  rtsp-client $API_KEY rtsp://cam.local:554/stream
+  rtsp-client $GUEST_LINK rtsp://user:pass@cam.local/stream
+  rtsp-client --check rtsp://cam.local:554/stream`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if checkFlag {
+				// api key / guest link is optional and ignored
+				return cobra.RangeArgs(1, 2)(cmd, args)
+			}
+			return cobra.MinimumNArgs(2)(cmd, args)
+		},
 		PreRun: func(cmd *cobra.Command, args []string) {
 
 		},
 		Run: func(cmd *cobra.Command, args []string) {
+			if checkFlag {
+				if !runRtspCheck(args[len(args)-1]) {
+					os.Exit(1)
+				}
+				return
+			}
 			rtspClientExample(args[0], args[1], apiEndpointFlag,
 				userFlag, roomIDFlag, userIDFlag)
 		},
@@ -119,7 +134,7 @@ func main() {
 	cobra.OnInitialize(initLogging)
 
 	rootCommand.Version = Version
-	rootCommand.SetVersionTemplate(`{{.Version}}`)
+	rootCommand.SetVersionTemplate("{{.Version}}\n")
 
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "rtsp-test", "User name to use")
@@ -132,7 +147,7 @@ func main() {
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
-	rootCommand.Flags().BoolVarP(&useH265CodecFlag, "h265", "", false, "If true, expect h265 instead of h264")
+	rootCommand.Flags().BoolVarP(&checkFlag, "check", "", false, "Only check the RTSP source (reachability, audio/video data) without joining a meeting")
 
 	rootCommand.Execute()
 }
@@ -189,8 +204,73 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 	return client.Rooms.Join(roomID, user, options)
 }
 
+// H264 is preferred if both are offered.
+func selectVideoTrack(session *description.Session) (codecH265 bool, found bool) {
+	var fh264 *format.H264
+	if session.FindFormat(&fh264) != nil {
+		return false, true
+	}
+	var fh265 *format.H265
+	if session.FindFormat(&fh265) != nil {
+		return true, true
+	}
+	return false, false
+}
+
+func offeredCodecs(session *description.Session) string {
+	codecs := []string{}
+	for _, m := range session.Medias {
+		for _, f := range m.Formats {
+			codecs = append(codecs, fmt.Sprintf("%s %s", m.Type, f.Codec()))
+		}
+	}
+	if len(codecs) == 0 {
+		return "nothing"
+	}
+	return strings.Join(codecs, ", ")
+}
+
+func codecName(codecH265 bool) string {
+	if codecH265 {
+		return "H265"
+	}
+	return "H264"
+}
+
+// Closes the connection right away, since some servers drop idle
+// connections while the meeting is joined.
+func probeRtspVideoCodec(rtspConnectURL string) (codecH265 bool, err error) {
+	u, err := base.ParseURL(rtspConnectURL)
+	if err != nil {
+		return false, fmt.Errorf("invalid RTSP URL: %w", err)
+	}
+	c := gortsplib.Client{}
+	if err := c.Start(u.Scheme, u.Host); err != nil {
+		return false, fmt.Errorf("connecting to rtsp server failed: %w", err)
+	}
+	defer c.Close()
+
+	session, _, err := c.Describe(u)
+	if err != nil {
+		return false, fmt.Errorf("describe failed: %w", err)
+	}
+	codecH265, found := selectVideoTrack(session)
+	if !found {
+		return false, fmt.Errorf("no H264 or H265 video track found (source offers: %s)",
+			offeredCodecs(session))
+	}
+	return codecH265, nil
+}
+
 func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	roomID, userID string) {
+
+	codecH265, err := probeRtspVideoCodec(rtspConnectURL)
+	if err != nil {
+		log.Error().Err(err).Msg("RTSP source not usable")
+		return
+	}
+	log.Info().Msgf("RTSP source delivers %s video", codecName(codecH265))
 
 	room, err := getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCAFileFlag,
 		insecureSkipVerifyFlag)
@@ -219,7 +299,7 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 		clientOptions = append(clientOptions, ghost.WithInsecureSkipVerify())
 	}
 
-	if useH265CodecFlag {
+	if codecH265 {
 		clientOptions = append(clientOptions, ghost.WithForceH265Codec())
 	} else {
 		clientOptions = append(clientOptions, ghost.WithForceH264Codec())
@@ -246,7 +326,7 @@ func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
 		log.Info().Msgf("Webrtc connected. Connecting to %s", rtspConnectURL)
-		setupRtspClient(localVideoTrack, rtspConnectURL, rtspTerminatedCh, useH265CodecFlag)
+		setupRtspClient(localVideoTrack, rtspConnectURL, rtspTerminatedCh, codecH265)
 	})
 
 	if err := eyesonClient.Call(); err != nil {
@@ -348,20 +428,10 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		var fh264 *format.H264
 		mediaH264 := session.FindFormat(&fh264)
 
-		if codecH265 && mediaH265 == nil {
-			log.Error().Msg("Expecting h265 codec but no h265 media found")
-			if mediaH264 != nil {
-				log.Error().Msg("Since h264-codec is present, think of starting without --h265 switch")
-			}
-			rtspTerminated <- true
-			return
-		}
-
-		if !codecH265 && mediaH264 == nil {
-			log.Error().Msg("Expecting h264 codec but no h264 media found")
-			if mediaH265 != nil {
-				log.Error().Msg("Since h265-codec is present, think of starting with --h265 switch")
-			}
+		// source may have changed since probing
+		if (codecH265 && mediaH265 == nil) || (!codecH265 && mediaH264 == nil) {
+			log.Error().Msgf("RTSP source no longer offers %s video (now offers: %s)",
+				codecName(codecH265), offeredCodecs(session))
 			rtspTerminated <- true
 			return
 		}
