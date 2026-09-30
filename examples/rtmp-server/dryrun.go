@@ -24,8 +24,6 @@ const (
 	dryRunStallTimeout  = 5 * time.Second
 )
 
-// dryRunStats holds the counters of one rtmp connection. It is written by the
-// reading goroutine and read by the status ticker, hence the mutex.
 type dryRunStats struct {
 	mu sync.Mutex
 
@@ -44,15 +42,11 @@ type dryRunStats struct {
 
 	gotVideoConfig bool
 
-	// values at the last status print, used for per-interval rates
 	lastPrintAt    time.Time
 	lastPrintBytes int64
 	lastPrintVideo int
 }
 
-// runDryRun starts an rtmp server without connecting to an eyeson meeting.
-// It reports every incoming connection and what is received on it, and keeps
-// accepting new connections until it is stopped with ctrl-c.
 func runDryRun(listenAddr string) {
 	u, err := url.Parse(listenAddr)
 	if err != nil {
@@ -88,7 +82,6 @@ func runDryRun(listenAddr string) {
 		handleDryRunConn(c, nc)
 	}
 
-	// ctrl-c: stop accepting, drop the active client and leave.
 	chStop := make(chan os.Signal, 1)
 	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -208,8 +201,7 @@ func processDryRunPacket(stats *dryRunStats, remote string, packet av.Packet) {
 		stats.mu.Unlock()
 
 	case av.H264:
-		// Same AVCC -> NALU step the real mode performs, to see whether the
-		// stream would be usable.
+		// decoded only to validate the stream
 		nalus, err := h264.AVCCUnmarshal(packet.Data)
 		stats.mu.Lock()
 		stats.videoPackets++
@@ -339,9 +331,7 @@ func logAACConfig(remote string, data []byte) {
 		Msg("AAC decoder config received (audio is not forwarded to the meeting)")
 }
 
-// printListenAddresses prints the rtmp urls clients can publish to. For a
-// wildcard listen address every IPv4 address of every active interface is
-// listed.
+// A wildcard address lists every IPv4 address of all active interfaces.
 func printListenAddresses(addr *net.TCPAddr, path string) {
 	port := addr.Port
 	if !addr.IP.IsUnspecified() {
@@ -375,7 +365,7 @@ func printListenAddresses(addr *net.TCPAddr, path string) {
 			}
 			ip4 := ipNet.IP.To4()
 			if ip4 == nil {
-				continue // ipv4 only
+				continue
 			}
 			log.Info().Msgf("    rtmp://%s:%d%s   (%s)", ip4, port, path, iface.Name)
 			found++
