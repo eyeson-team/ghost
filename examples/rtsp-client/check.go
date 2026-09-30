@@ -1,10 +1,5 @@
 package main
 
-// Check mode: probe the RTSP source only. Nothing in this file talks to
-// eyeson; it answers "can the server be reached, what does it describe and
-// what does it actually deliver?" and whether that stream is usable by the
-// forwarding mode with the current flags.
-
 import (
 	"errors"
 	"fmt"
@@ -32,22 +27,17 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// ---------------------------------------------------------------------------
-// report output (stdout, independent of the log level so --quiet still works)
-// ---------------------------------------------------------------------------
-
 type checkReport struct {
 	failures     int
 	warnings     int
 	firstFailure string
-	summary      [][2]string // ordered key/value lines for the final summary
+	summary      [][2]string
 }
 
 func (r *checkReport) sum(key, f string, a ...interface{}) {
 	r.summary = append(r.summary, [2]string{key, fmt.Sprintf(f, a...)})
 }
 
-// print the final state and summary block
 func (r *checkReport) finish(took time.Duration) {
 	r.section("Result")
 	state := "OK"
@@ -94,18 +84,9 @@ func (r *checkReport) fail(f string, a ...interface{}) {
 func ms(d time.Duration) string { return fmt.Sprintf("%d ms", d.Milliseconds()) }
 
 const (
-	// The check ends on its own as soon as every track delivered data and
-	// the video track has a frame the forwarder can start with. It fails if
-	// that does not happen within checkTimeout.
-	checkTimeout = 15 * time.Second
-	// Minimum amount of video received before finishing, so the measured
-	// frame rate and bitrate are meaningful.
-	checkMinSample = 1 * time.Second
+	checkTimeout   = 15 * time.Second
+	checkMinSample = 1 * time.Second // needed for meaningful fps/bitrate
 )
-
-// ---------------------------------------------------------------------------
-// per-track statistics collected while playing
-// ---------------------------------------------------------------------------
 
 type trackStats struct {
 	media *description.Media
@@ -116,21 +97,19 @@ type trackStats struct {
 	firstPkt time.Time
 	lastPkt  time.Time
 
-	// frame accounting based on RTP timestamps (one timestamp == one frame)
-	frames       uint64
+	frames       uint64 // one RTP timestamp == one frame
 	haveTS       bool
 	lastTS       uint32
-	extTS        int64  // unwrapped timestamp relative to the first packet
-	minTS, maxTS int64  // range covered, in clock-rate units
-	nonMonotonic uint64 // timestamps going backwards -> usually B-frames
+	extTS        int64
+	minTS, maxTS int64
+	nonMonotonic uint64 // usually B-frames
 
-	// video only
 	h264Dec        *rtph264.Decoder
 	h265Dec        *rtph265.Decoder
 	decodeErrors   uint64
 	keyframes      uint64
-	keyInFrame     bool // current frame already counted as keyframe
-	craSeen        bool // H265 open-GOP random access points (not IDR)
+	keyInFrame     bool
+	craSeen        bool
 	firstKeyframe  time.Time
 	lastKeyframe   time.Time
 	keyIntervalSum time.Duration
@@ -155,7 +134,7 @@ func (s *trackStats) onPacket(pkt *rtp.Packet, now time.Time) {
 		s.lastTS = pkt.Timestamp
 		s.frames = 1
 	} else if pkt.Timestamp != s.lastTS {
-		// int32 cast handles the 32-bit wrap-around
+		// int32 cast handles wrap-around
 		d := int32(pkt.Timestamp - s.lastTS)
 		if d < 0 {
 			s.nonMonotonic++
@@ -256,10 +235,6 @@ func (s *trackStats) inspectH265(nalus [][]byte, now time.Time) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// SPS helpers
-// ---------------------------------------------------------------------------
-
 func describeH264SPS(buf []byte) string {
 	if len(buf) == 0 {
 		return ""
@@ -307,7 +282,6 @@ func describeH265SPS(buf []byte) string {
 	return out
 }
 
-// spsResolution returns "WxH" or "" if the SPS is missing or unparsable.
 func spsResolution(codecH265 bool, buf []byte) string {
 	if len(buf) == 0 {
 		return ""
@@ -325,10 +299,6 @@ func spsResolution(codecH265 bool, buf []byte) string {
 	}
 	return ""
 }
-
-// ---------------------------------------------------------------------------
-// error hints
-// ---------------------------------------------------------------------------
 
 func explainRTSPError(err error) string {
 	var bad liberrors.ErrClientBadStatusCode
@@ -359,19 +329,13 @@ func withHint(err error) string {
 	return err.Error()
 }
 
-// ---------------------------------------------------------------------------
-// the check itself
-// ---------------------------------------------------------------------------
-
-// runRtspCheck probes rtspConnectURL and prints a report to stdout.
-// It returns false if the stream is not usable for forwarding.
+// Returns false if the stream is not usable for forwarding.
 func runRtspCheck(rtspConnectURL string) bool {
 	r := &checkReport{}
 
 	checkStart := time.Now()
 	defer func() { r.finish(time.Since(checkStart)) }()
 
-	// --- 1. URL ------------------------------------------------------------
 	r.section("URL")
 	u, err := base.ParseURL(rtspConnectURL)
 	if err != nil {
@@ -390,9 +354,7 @@ func runRtspCheck(rtspConnectURL string) bool {
 		host = net.JoinHostPort(u.Hostname(), port)
 	}
 
-	// --- 2. plain TCP reachability ----------------------------------------
-	// Done separately so "host/port unreachable" is clearly distinguishable
-	// from RTSP-level problems.
+	// separate TCP dial to tell network problems apart from RTSP errors
 	r.section("Reachability")
 	t0 := time.Now()
 	conn, err := net.DialTimeout("tcp", host, 5*time.Second)
@@ -405,9 +367,6 @@ func runRtspCheck(rtspConnectURL string) bool {
 	r.sum("source", "reachable")
 	conn.Close()
 
-	// --- 3. RTSP session ---------------------------------------------------
-	// Same client settings as the forward mode (defaults), so the result is
-	// representative.
 	var (
 		packetsLost     uint64
 		decodeErrs      uint64
@@ -434,7 +393,7 @@ func runRtspCheck(rtspConnectURL string) bool {
 	t0 = time.Now()
 	optRes, err := c.Options(u)
 	if err != nil {
-		// Some cameras answer OPTIONS badly but stream fine, so only warn.
+		// some cameras fail OPTIONS but stream fine
 		r.warn("OPTIONS failed: %s", withHint(err))
 	} else {
 		r.ok("OPTIONS answered in %s", ms(time.Since(t0)))
@@ -455,7 +414,6 @@ func runRtspCheck(rtspConnectURL string) bool {
 	}
 	r.ok("DESCRIBE answered in %s", ms(time.Since(t0)))
 
-	// --- 4. what the server describes (SDP) --------------------------------
 	r.section("Described tracks (SDP)")
 	if session.Title != "" {
 		r.info("title: %s", session.Title)
@@ -470,7 +428,6 @@ func runRtspCheck(rtspConnectURL string) bool {
 	var fh265 *format.H265
 	mediaH265 := session.FindFormat(&fh265)
 
-	// same selection as the forward mode
 	codecH265, found := selectVideoTrack(session)
 	wantCodec := codecName(codecH265)
 	var selMedia *description.Media
@@ -529,7 +486,6 @@ func runRtspCheck(rtspConnectURL string) bool {
 		r.info("source offers H264 and H265, H264 is preferred")
 	}
 
-	// parameter sets in the SDP: the H264 forwarder prepends them to keyframes
 	var sdpSPS, sdpPPS, sdpVPS []byte
 	if codecH265 {
 		sdpVPS, sdpSPS, sdpPPS = fh265.SafeParams()
@@ -537,7 +493,6 @@ func runRtspCheck(rtspConnectURL string) bool {
 		sdpSPS, sdpPPS = fh264.SafeParams()
 	}
 
-	// --- 5. SETUP + PLAY and measure --------------------------------------
 	r.section("Stream data")
 
 	var mu sync.Mutex
@@ -577,14 +532,13 @@ func runRtspCheck(rtspConnectURL string) bool {
 		defer mu.Unlock()
 		if ts, ok := stats[m]; ok {
 			if m == selMedia && f != selFormat {
-				return // other format multiplexed on the same media
+				return
 			}
 			ts.onPacket(pkt, now)
 		}
 	})
 
-	// Install the handler before PLAY, so Ctrl-C always ends up in the
-	// summary instead of killing the process.
+	// before PLAY, so Ctrl-C still prints the summary
 	chStop := make(chan os.Signal, 1)
 	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(chStop)
@@ -597,9 +551,7 @@ func runRtspCheck(rtspConnectURL string) bool {
 	r.ok("PLAY accepted in %s", ms(time.Since(playStart)))
 	r.info("receiving stream data (at most %s) ...", checkTimeout)
 
-	// ready reports whether we have seen enough: data on every track, a frame
-	// the forwarder can start with, and a short sample for the rates.
-	// Must be called with mu held.
+	// caller must hold mu
 	ready := func() bool {
 		for _, ts := range stats {
 			if ts.packets == 0 {
@@ -720,7 +672,6 @@ wait:
 		}
 		r.sum(key, "%s %s, ~%.0f fps, ~%.0f kbit/s", ts.forma.Codec(), res, fps, kbps)
 
-		// Everything below mirrors what the forward mode depends on.
 		if ts.decodeErrors > 0 {
 			r.warn("%d %s depacketization errors", ts.decodeErrors, wantCodec)
 		}
@@ -755,7 +706,6 @@ wait:
 				elapsed.Round(time.Second))
 		}
 
-		// parameter sets
 		if ts.inbandSPSInfo != "" && sdpSPS == nil {
 			r.info("in-band SPS: %s", ts.inbandSPSInfo)
 		}

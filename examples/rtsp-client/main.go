@@ -54,9 +54,7 @@ var (
   rtsp-client --check rtsp://cam.local:554/stream`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if checkFlag {
-				// Only the RTSP URL is needed. The two-argument form is
-				// accepted too, so --check can be added to an existing
-				// command line; the api key / guest link is then ignored.
+				// api key / guest link is optional and ignored
 				return cobra.RangeArgs(1, 2)(cmd, args)
 			}
 			return cobra.MinimumNArgs(2)(cmd, args)
@@ -66,7 +64,6 @@ var (
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			if checkFlag {
-				// RTSP side only, never connects to eyeson.
 				if !runRtspCheck(args[len(args)-1]) {
 					os.Exit(1)
 				}
@@ -207,8 +204,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 	return client.Rooms.Join(roomID, user, options)
 }
 
-// selectVideoTrack decides which video track of the RTSP source is forwarded.
-// Only H264 and H265 are supported; H264 is preferred if both are offered.
+// H264 is preferred if both are offered.
 func selectVideoTrack(session *description.Session) (codecH265 bool, found bool) {
 	var fh264 *format.H264
 	if session.FindFormat(&fh264) != nil {
@@ -221,7 +217,6 @@ func selectVideoTrack(session *description.Session) (codecH265 bool, found bool)
 	return false, false
 }
 
-// offeredCodecs lists all codecs of a session, for error messages.
 func offeredCodecs(session *description.Session) string {
 	codecs := []string{}
 	for _, m := range session.Medias {
@@ -242,10 +237,8 @@ func codecName(codecH265 bool) string {
 	return "H264"
 }
 
-// probeRtspVideoCodec connects to the RTSP source, reads its description and
-// returns the codec of the video track to forward. The connection is closed
-// again right away: joining the meeting can take a while, and some servers
-// drop connections that stay idle between DESCRIBE and PLAY.
+// Closes the connection right away, since some servers drop idle
+// connections while the meeting is joined.
 func probeRtspVideoCodec(rtspConnectURL string) (codecH265 bool, err error) {
 	u, err := base.ParseURL(rtspConnectURL)
 	if err != nil {
@@ -272,8 +265,6 @@ func probeRtspVideoCodec(rtspConnectURL string) (codecH265 bool, err error) {
 func rtspClientExample(apiKeyOrGuestlink, rtspConnectURL, apiEndpoint, user,
 	roomID, userID string) {
 
-	// Ask the RTSP source first, so the meeting connection can be set up with
-	// the matching codec (and no meeting is joined for an unusable source).
 	codecH265, err := probeRtspVideoCodec(rtspConnectURL)
 	if err != nil {
 		log.Error().Err(err).Msg("RTSP source not usable")
@@ -437,8 +428,7 @@ func setupRtspClient(videoTrack ghost.RTPWriter, rtspConnectURL string,
 		var fh264 *format.H264
 		mediaH264 := session.FindFormat(&fh264)
 
-		// The codec was probed before joining the meeting; the source could
-		// have changed in the meantime.
+		// source may have changed since probing
 		if (codecH265 && mediaH265 == nil) || (!codecH265 && mediaH264 == nil) {
 			log.Error().Msgf("RTSP source no longer offers %s video (now offers: %s)",
 				codecName(codecH265), offeredCodecs(session))
