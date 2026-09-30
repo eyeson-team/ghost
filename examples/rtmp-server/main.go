@@ -39,15 +39,31 @@ var (
 	widescreenFlag         bool
 	quietFlag              bool
 	insecureSkipVerifyFlag bool
+	dryRunFlag             bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtmp-server [flags] $API_KEY|$GUEST_LINK",
 		Short: "rtmp-server",
-		Args:  cobra.MinimumNArgs(1),
+		Long: "rtmp-server\n\n" +
+			"Use --dry-run to only start the RTMP server and test an rtmp client\n" +
+			"without joining a meeting. No api key or guest link is needed then.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if dryRunFlag {
+				return cobra.MaximumNArgs(1)(cmd, args)
+			}
+			return cobra.MinimumNArgs(1)(cmd, args)
+		},
 		PreRun: func(cmd *cobra.Command, args []string) {
 
 		},
 		Run: func(cmd *cobra.Command, args []string) {
+			if dryRunFlag {
+				if len(args) > 0 {
+					log.Warn().Msg("Dry-run: ignoring api key / guest link")
+				}
+				runDryRun(rtmpListenAddrFlag)
+				return
+			}
 			rtmpServerExample(args[0], apiEndpointFlag,
 				userFlag, roomIDFlag, rtmpListenAddrFlag,
 				userIDFlag)
@@ -118,6 +134,8 @@ func main() {
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
+
+	rootCommand.Flags().BoolVarP(&dryRunFlag, "dry-run", "", false, "don't join a meeting, only run the rtmp server and show incoming connections and stream stats")
 
 	rootCommand.Execute()
 }
