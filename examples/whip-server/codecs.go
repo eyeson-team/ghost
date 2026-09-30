@@ -10,35 +10,21 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
-// VideoCodec ties together the three names one codec has in this example: the
-// name used on the command line, the mime type used by pion and in SDP, and the
-// ghost option that makes the eyeson side negotiate it. Codecs the meeting
-// server only decodes in one flavour carry that restriction as well.
 type VideoCodec struct {
 	Name        string
 	MimeType    string
 	GhostOption ghost.ClientOption
 
-	// FmtpLine is registered with pion and ends up in the answer, which is how
-	// a sender that offers several formats of this codec is told which one to
-	// send. Empty means the sender's format is answered as offered.
+	// Sent in the answer to pin the sender to one format.
 	FmtpLine string
 
-	// Accepts reports whether one offered format of this codec can be
-	// forwarded. A nil Accepts takes every format.
 	Accepts func(parameters map[string]string) bool
 }
 
-// DefaultVideoCodecs is the preference order used when nothing else is given.
-// The eyeson media server prefers VP9, so that is tried first, and the two
-// codecs every WHIP sender can fall back on come last: H264, then H265.
+// VP9 first, the eyeson media server prefers it.
 const DefaultVideoCodecs = "vp9,av1,vp8,h264,h265"
 
-// vp9Profile0 is the only VP9 profile the eyeson media server decodes: 8 bit,
-// 4:2:0. Senders that can do more than one (Chrome offers profile 0 and profile
-// 2) are pinned to it by the fmtp line in the answer; senders that can only do
-// another one are turned down before a session is set up, because nothing in
-// the forwarding path would notice the mismatch afterwards.
+// The only VP9 profile the eyeson media server decodes.
 const vp9Profile0 = "profile-id=0"
 
 var knownVideoCodecs = []VideoCodec{
@@ -50,17 +36,13 @@ var knownVideoCodecs = []VideoCodec{
 	{Name: "h265", MimeType: webrtc.MimeTypeH265, GhostOption: ghost.WithForceH265Codec()},
 }
 
-// isVP9Profile0 reports whether an offered VP9 format is profile 0. profile-id
-// may be left out of an offer, in which case profile 0 is to be inferred - the
-// VP9 RTP payload format says so, and pion's own fmtp matching does the same.
+// A missing profile-id means profile 0.
 func isVP9Profile0(parameters map[string]string) bool {
 	profile, given := parameters["profile-id"]
 	return !given || strings.TrimSpace(profile) == "0"
 }
 
-// sdpNameToMimeType maps the encoding names that show up in a=rtpmap lines onto
-// pion mime types. AV1X is what older Chrome versions offered, HEVC is what some
-// senders use instead of H265.
+// AV1X: older Chrome. HEVC: some senders' name for H265.
 var sdpNameToMimeType = map[string]string{
 	"H264": webrtc.MimeTypeH264,
 	"VP8":  webrtc.MimeTypeVP8,
@@ -71,8 +53,6 @@ var sdpNameToMimeType = map[string]string{
 	"HEVC": webrtc.MimeTypeH265,
 }
 
-// ParseVideoCodecs turns a comma separated list like "vp9,h264" into the codec
-// preference order used when answering a WHIP offer.
 func ParseVideoCodecs(list string) ([]VideoCodec, error) {
 	result := []VideoCodec{}
 	for _, entry := range strings.Split(list, ",") {
@@ -107,16 +87,11 @@ func knownVideoCodecNames() string {
 	return strings.Join(names, ", ")
 }
 
-// VideoFormat is one video payload type of an SDP offer: which codec it is and
-// how it is parameterised. The parameters are kept because a sender may offer
-// the same codec more than once - Chrome offers VP9 as profile 0 and as profile
-// 2 - and only some of those can be forwarded.
 type VideoFormat struct {
 	MimeType   string
 	Parameters map[string]string
 }
 
-// Describe renders the fmtp parameters in a stable order, for log lines.
 func (f VideoFormat) Describe() string {
 	if len(f.Parameters) == 0 {
 		return "no fmtp line"
@@ -133,15 +108,11 @@ func (f VideoFormat) Describe() string {
 	return strings.Join(parts, ";")
 }
 
-// offeredFormat is one payload type of an SDP offer, before it is mapped onto a
-// pion mime type: the rtpmap encoding name plus the parameters of its fmtp line.
 type offeredFormat struct {
 	Name       string
 	Parameters map[string]string
 }
 
-// offeredFormats returns the payload types of one media kind ("video" or
-// "audio") in an SDP offer, in the order the sender listed them.
 func offeredFormats(offer, kind string) ([]offeredFormat, error) {
 	parsed := sdp.SessionDescription{}
 	if err := parsed.Unmarshal([]byte(offer)); err != nil {
@@ -193,8 +164,6 @@ func offeredFormats(offer, kind string) ([]offeredFormat, error) {
 	return formats, nil
 }
 
-// parseFmtpParameters splits an fmtp line into its key/value pairs, the same way
-// pion does it internally.
 func parseFmtpParameters(line string) map[string]string {
 	parameters := map[string]string{}
 	for _, part := range strings.Split(line, ";") {
@@ -208,9 +177,7 @@ func parseFmtpParameters(line string) map[string]string {
 	return parameters
 }
 
-// OfferedVideoFormats returns every video format found in an SDP offer, in the
-// order the sender listed them. Unknown encodings and the helper formats (rtx,
-// red, ulpfec, flexfec) are left out.
+// Skips rtx, red, fec and unknown encodings.
 func OfferedVideoFormats(offer string) ([]VideoFormat, error) {
 	formats, err := offeredFormats(offer, "video")
 	if err != nil {
@@ -232,9 +199,6 @@ func OfferedVideoFormats(offer string) ([]VideoFormat, error) {
 	return offered, nil
 }
 
-// VideoMimeTypes lists the distinct mime types of a set of formats, keeping the
-// order they came in. That is what a log line wants - the profiles only get
-// interesting when something is turned down because of them.
 func VideoMimeTypes(formats []VideoFormat) []string {
 	mimeTypes := []string{}
 	seen := map[string]bool{}
@@ -248,9 +212,6 @@ func VideoMimeTypes(formats []VideoFormat) []string {
 	return mimeTypes
 }
 
-// OfferedVideoCodecs returns the mime types of all video codecs found in an SDP
-// offer, in the order the sender listed them. Profiles are not considered here,
-// OfferedVideoFormats keeps them.
 func OfferedVideoCodecs(offer string) ([]string, error) {
 	formats, err := OfferedVideoFormats(offer)
 	if err != nil {
@@ -259,9 +220,6 @@ func OfferedVideoCodecs(offer string) ([]string, error) {
 	return VideoMimeTypes(formats), nil
 }
 
-// OfferedAudioCodecs returns the rtpmap encoding names of the audio section,
-// e.g. ["OPUS", "PCMU"]. Names are returned rather than mime types because the
-// point is to report what a sender wanted when none of it can be forwarded.
 func OfferedAudioCodecs(offer string) ([]string, error) {
 	formats, err := offeredFormats(offer, "audio")
 	if err != nil {
@@ -281,9 +239,6 @@ func OfferedAudioCodecs(offer string) ([]string, error) {
 	return names, nil
 }
 
-// OffersOpus reports whether Opus is among the offered audio encodings. Opus is
-// the only audio codec that can be forwarded, because the ghost audio track is
-// always an Opus track.
 func OffersOpus(audioEncodings []string) bool {
 	for _, name := range audioEncodings {
 		if name == "OPUS" {
@@ -293,7 +248,6 @@ func OffersOpus(audioEncodings []string) bool {
 	return false
 }
 
-// accepts reports whether one offered format can be forwarded as this codec.
 func (c VideoCodec) accepts(format VideoFormat) bool {
 	if !strings.EqualFold(c.MimeType, format.MimeType) {
 		return false
@@ -304,10 +258,7 @@ func (c VideoCodec) accepts(format VideoFormat) bool {
 	return c.Accepts(format.Parameters)
 }
 
-// SelectVideoCodec picks the first configured codec the sender also offers in a
-// usable format. The server preference wins over the sender preference, which is
-// what lets the meeting server get VP9 even when a sender would rather send
-// H264.
+// Server preference wins over sender preference.
 func SelectVideoCodec(preference []VideoCodec, offered []VideoFormat) (VideoCodec, bool) {
 	for _, codec := range preference {
 		for _, format := range offered {
@@ -319,10 +270,7 @@ func SelectVideoCodec(preference []VideoCodec, offered []VideoFormat) (VideoCode
 	return VideoCodec{}, false
 }
 
-// UnusableVideoFormats describes the configured codecs a sender did offer, but
-// only in a format that cannot be forwarded - VP9 in a profile other than 0,
-// today. Without it such an offer looks exactly like a sender that never
-// mentioned the codec at all.
+// Codecs that were offered, but only in a format that cannot be forwarded.
 func UnusableVideoFormats(preference []VideoCodec, offered []VideoFormat) []string {
 	unusable := []string{}
 

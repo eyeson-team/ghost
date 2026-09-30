@@ -20,58 +20,33 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// sdesRepairRTPStreamIDURI is the header extension an rtx stream uses to name
-// the simulcast layer it repairs, RFC 8852. Spelled out because the pinned
-// pion/sdp has constants for mid and rid, but not yet for this one.
+// RFC 8852, not yet a constant in pion/sdp.
 const sdesRepairRTPStreamIDURI = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
 
-// iceGatherTimeout bounds how long the answer waits for ice candidates. A turn
-// server that is slow to allocate must not hold up a publish; host candidates
-// are there almost immediately.
 const iceGatherTimeout = 2 * time.Second
 
-// ConnectFunc hands back the eyeson tracks to forward to, for a given video
-// codec. It is called once per WHIP session, after the codec has been picked.
 type ConnectFunc func(codec VideoCodec) (video ghost.RTPWriter, audio ghost.RTPWriter, err error)
 
-// WHIPConfig holds everything the WHIP endpoint needs to know.
 type WHIPConfig struct {
-	// ListenAddr is the address the http server binds to, e.g. ":8100".
-	ListenAddr string
-	// Path is the http path senders publish to, e.g. "/whip".
-	Path string
-	// BearerToken, if not empty, is required in the Authorization header.
+	ListenAddr  string
+	Path        string
 	BearerToken string
-	// TLSCertFile and TLSKeyFile enable https when both are set.
 	TLSCertFile string
 	TLSKeyFile  string
-	// ICE configures how the ingest peer connection is reached.
-	ICE ICESettings
-	// VideoCodecs is the server side codec preference, most wanted first. The
-	// first entry the sender also offers wins.
+	ICE         ICESettings
+	// Most preferred first.
 	VideoCodecs []VideoCodec
-	// PLIInterval defines how often a keyframe is requested from the sender.
-	// Zero disables the periodic request.
+	// Zero disables periodic keyframe requests.
 	PLIInterval time.Duration
-	// Simulcast is SimulcastSelect or SimulcastDecline, see simulcast.go.
-	Simulcast string
-	// SimulcastRID selects the simulcast layer to forward by its rid. Empty or
-	// "auto" picks the layer with the highest bitrate.
-	SimulcastRID string
-	// Connect provides the eyeson side tracks for the negotiated codec.
-	Connect ConnectFunc
-	// OnSessionEnded is called whenever an ingest session goes away.
+	Simulcast   string
+	// Empty or "auto" picks the layer with the highest bitrate.
+	SimulcastRID   string
+	Connect        ConnectFunc
 	OnSessionEnded func()
-	// OnSessionState, if set, is called with every state the ingest peer
-	// connection reaches. OnSessionEnded says that a session is over,
-	// this says how it was doing while it lasted - connected above all,
-	// which is the first moment a sender is known to have reached us.
 	OnSessionState func(id string, state webrtc.PeerConnectionState)
 }
 
-// WHIPServer implements a minimal WHIP (WebRTC-HTTP Ingestion Protocol)
-// endpoint. It accepts a single publishing session at a time and forwards the
-// received RTP packets into an eyeson meeting.
+// WHIPServer accepts one publishing session at a time.
 type WHIPServer struct {
 	cfg WHIPConfig
 
@@ -84,26 +59,20 @@ type whipSession struct {
 	pc    *webrtc.PeerConnection
 	codec VideoCodec
 
-	// ready is closed once the meeting connection has been established (or has
-	// failed). Until then video and audio are nil and arriving packets are
-	// dropped - the sender is already publishing at that point.
+	// Closed once the meeting is connected (or failed). Packets before that are dropped.
 	ready chan struct{}
 
 	video  ghost.RTPWriter
 	audio  ghost.RTPWriter
 	closed bool
 
-	// A sender may publish more than one video track (multi track WHIP).
-	// Only the first track per kind is forwarded, the rest is read and
-	// dropped. Simulcast layers go through the selector first, so the first
-	// video track to claim a target is the chosen layer.
+	// Only the first track per kind is forwarded.
 	videoTaken bool
 	audioTaken bool
 
 	simulcast *simulcastSelector
 }
 
-// NewWHIPServer creates a WHIP endpoint. Call Start to actually serve it.
 func NewWHIPServer(cfg WHIPConfig) *WHIPServer {
 	if !strings.HasPrefix(cfg.Path, "/") {
 		cfg.Path = "/" + cfg.Path
@@ -115,7 +84,6 @@ func NewWHIPServer(cfg WHIPConfig) *WHIPServer {
 	return &WHIPServer{cfg: cfg}
 }
 
-// Start runs the http server in the background.
 func (s *WHIPServer) Start() error {
 	if s.cfg.Connect == nil {
 		return errors.New("no connect function configured")
@@ -128,9 +96,6 @@ func (s *WHIPServer) Start() error {
 	mux.HandleFunc(s.cfg.Path, s.handleEndpoint)
 	mux.HandleFunc(s.cfg.Path+"/", s.handleResource)
 
-	// logRequests writes one debug line per request. A sender whose PATCH or
-	// DELETE was turned down looks exactly like a sender that never called at
-	// all without it, see diagnostics.go.
 	server := &http.Server{Addr: s.cfg.ListenAddr, Handler: logRequests(mux)}
 
 	scheme := "http"
@@ -138,14 +103,11 @@ func (s *WHIPServer) Start() error {
 		scheme = "https"
 	}
 
-	// Listen synchronously so a busy port is reported right away.
 	listener, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
 
-	// A sender on another machine needs an address it can reach, and ":8100"
-	// is not one, so every local address is spelled out, see netinfo.go.
 	for _, endpoint := range EndpointURLs(scheme, s.cfg.ListenAddr, s.cfg.Path) {
 		log.Info().Msgf("WHIP endpoint listening on %s", endpoint)
 	}
@@ -166,16 +128,11 @@ func (s *WHIPServer) Start() error {
 	return nil
 }
 
-//
-// http handlers
-//
-
 func (s *WHIPServer) handleEndpoint(w http.ResponseWriter, r *http.Request) {
 	setCORSHeaders(w)
 
 	switch r.Method {
 	case http.MethodOptions:
-		// Preflight and ICE server discovery.
 		s.setICELinkHeaders(w)
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodPost:
@@ -202,11 +159,6 @@ func (s *WHIPServer) handleResource(w http.ResponseWriter, r *http.Request) {
 		log.Info().Msgf("WHIP session %s deleted by sender", resourceID)
 		w.WriteHeader(http.StatusOK)
 	case http.MethodPatch:
-		// Trickle ICE. This server answers with its own candidates right away,
-		// so nothing has to be patched in that direction - but a sender whose
-		// offer carries no candidates has no other way to say where its media
-		// arrives, and an ice-lite sender never sends checks that would let us
-		// find out. See trickle.go.
 		s.handleTrickle(w, r, resourceID)
 	default:
 		w.Header().Set("Allow", "DELETE, PATCH, OPTIONS")
@@ -246,16 +198,10 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// An offer without candidates is not an error - they may still be trickled
-	// in - but if they never arrive the session just times out half a minute
-	// later, with nothing in the log that points at the cause. The summary also
-	// decides whether this session has to be answered as a lite agent.
+	// Also decides whether to answer as an ice-lite agent.
 	offerICE := LogOfferICE(offer)
 
-	// Pick the codec first: it decides how the eyeson side is connected and
-	// which codec ends up in the answer. Formats are compared, not just codec
-	// names, because a sender may offer the same codec in a flavour the meeting
-	// server cannot decode - VP9 in a profile other than 0.
+	// Compare formats, not just names: VP9 may be offered in an unsupported profile.
 	offeredVideo, err := OfferedVideoFormats(offer)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to parse the sdp offer")
@@ -270,10 +216,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Opus is the only audio codec that can be forwarded: the ghost audio track
-	// is an Opus track and this example does not transcode. Anything else is
-	// answered with a rejected audio section, so the session still comes up -
-	// just without sound. Say so, otherwise it looks like a silent failure.
+	// Only Opus can be forwarded. Other audio is rejected, the session still comes up.
 	hasAudio := len(offeredAudio) > 0
 	forwardAudio := OffersOpus(offeredAudio)
 	if hasAudio && !forwardAudio {
@@ -281,8 +224,6 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 			"Publishing without audio.", offeredAudio)
 	}
 
-	// A codec that is offered but only in an unusable format looks exactly like
-	// a codec that was never offered, so say what happened to it.
 	for _, unusable := range UnusableVideoFormats(s.cfg.VideoCodecs, offeredVideo) {
 		log.Warn().Msgf("Ignoring %s, the meeting server cannot decode that format",
 			unusable)
@@ -293,8 +234,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	case ok:
 		log.Info().Msgf("Sender offers video as %v, using %s", offeredVideoCodecs, codec.Name)
 	case len(offeredVideo) == 0 && forwardAudio:
-		// audio only sender. ghost always creates a video track, so a codec
-		// still has to be picked - take the preferred one, it stays silent.
+		// Audio only: ghost always creates a video track, so pick a codec anyway.
 		codec = s.cfg.VideoCodecs[0]
 		log.Info().Msg("Sender offers no video, publishing audio only")
 	case len(offeredVideo) == 0:
@@ -308,8 +248,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only one publisher at a time. A new offer takes over, which is what you
-	// want when a sender crashed and reconnects.
+	// One publisher at a time, a new offer takes over.
 	s.mu.Lock()
 	previous := s.session
 	s.mu.Unlock()
@@ -334,10 +273,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		simulcast: newSimulcastSelector(s.cfg.SimulcastRID),
 	}
 
-	// Joining the meeting takes seconds, and the sender is waiting for this
-	// http response - senders give up long before a cold ghost connect and a
-	// full ICE gathering are done. So answer first and connect in parallel;
-	// packets that arrive before the meeting is up are dropped.
+	// Answer first and connect in parallel, senders time out before a cold ghost connect.
 	go s.connectMeeting(sess, forwardAudio)
 
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -346,8 +282,6 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.forwardTrack(sess, track)
 	})
 
-	// The connection state says that something failed, the ice state and the
-	// selected pair say where it got stuck. See diagnostics.go.
 	LogSessionICE(sess.id, pc)
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -381,10 +315,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gather candidates before replying, so no trickle ICE is needed. A TURN
-	// server that is slow to allocate must not hold up the answer, so this is
-	// bounded: pion keeps adding candidates to the local description as they
-	// arrive, and host candidates are there almost immediately.
+	// Bounded, so a slow TURN allocation cannot hold up the answer.
 	gatherComplete := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(answer); err != nil {
 		log.Error().Err(err).Msg("Failed to set local description")
@@ -412,8 +343,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/sdp")
 	w.Header().Set("Location", s.resourceURL(r, sess.id))
-	// RFC 9725 section 4.2: a resource that takes trickled candidates carries
-	// an ETag, and some senders only try a PATCH once they have seen one.
+	// RFC 9725 section 4.2: some senders only PATCH after seeing an ETag.
 	w.Header().Set("ETag", `"`+sess.id+`"`)
 	s.setICELinkHeaders(w)
 	w.WriteHeader(http.StatusCreated)
@@ -424,17 +354,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	log.Info().Msgf("WHIP session %s established", sess.id)
 }
 
-//
-// webrtc plumbing
-//
-
-// newIngestPeerConnection builds the peer connection that faces the WHIP
-// sender. Only the negotiated video codec and Opus are registered, which
-// guarantees that whatever arrives here can be forwarded to eyeson untouched.
-//
-// lite answers this one session as an ice lite agent, even when the server was
-// not started with --ice-lite: the offer left no other way to connect. See
-// OfferICE.NeedsLiteAnswer.
+// lite forces an ice-lite answer for this session, see OfferICE.NeedsLiteAnswer.
 func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webrtc.PeerConnection, error) {
 	m := &webrtc.MediaEngine{}
 
@@ -444,10 +364,7 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		{Type: "goog-remb"},
 	}
 
-	// The fmtp line is part of the match: with "profile-id=0" registered, a
-	// sender that offers VP9 twice (Chrome offers profile 0 and profile 2) is
-	// answered with the profile 0 payload type only, and the answer carries the
-	// fmtp line so the sender knows which one to use.
+	// The fmtp line pins senders offering several VP9 profiles to profile 0.
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{
 			MimeType:     codec.MimeType,
@@ -472,11 +389,7 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		return nil, err
 	}
 
-	// Simulcast layers share one m-line and are told apart by the mid and rid
-	// header extensions. Without them in the answer the sender still sends
-	// every layer, but pion cannot map the ssrcs to the transceiver and drops
-	// them ("mid RTP Extensions required for Simulcast"). OBS offers both.
-	// The repaired rid is what an rtx stream of a layer would carry.
+	// pion drops simulcast layers unless mid and rid are in the answer.
 	for _, extension := range []struct {
 		uri  string
 		kind webrtc.RTPCodecType
@@ -512,8 +425,6 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		webrtc.WithInterceptorRegistry(interceptorRegistry),
 		webrtc.WithSettingEngine(settingEngine))
 
-	// A lite agent gathers host candidates only, so stun and turn would just
-	// hold the answer up for nothing.
 	iceServers := ice.ICEServers()
 	if ice.Lite {
 		iceServers = nil
@@ -524,8 +435,6 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 	})
 }
 
-// connectMeeting establishes the eyeson connection for a session in the
-// background and publishes the tracks to it.
 func (s *WHIPServer) connectMeeting(sess *whipSession, forwardAudio bool) {
 	start := time.Now()
 	video, audio, err := s.cfg.Connect(sess.codec)
@@ -551,10 +460,6 @@ func (s *WHIPServer) connectMeeting(sess *whipSession, forwardAudio bool) {
 		time.Since(start).Round(time.Millisecond))
 }
 
-// claimTarget returns the eyeson track this incoming track should be written
-// to, or nil when there already is one of that kind. A sender may publish more
-// than one video track (multi track WHIP); only the first per kind is
-// forwarded. Simulcast layers only get here once they have been chosen.
 func (s *WHIPServer) claimTarget(sess *whipSession, track *webrtc.TrackRemote) ghost.RTPWriter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -574,16 +479,8 @@ func (s *WHIPServer) claimTarget(sess *whipSession, track *webrtc.TrackRemote) g
 	return sess.audio
 }
 
-// forwardTrack pumps the RTP packets of one incoming track into the matching
-// eyeson track. Payload type and SSRC are rewritten by pion on write, so the
-// payloads can be passed on as they are - no decoding, no re-encoding.
-//
-// The track is read from the moment it appears, even while the meeting
-// connection is still coming up: not reading would stall the receiver and its
-// RTCP. Those early packets are counted and dropped.
+// Read even before the meeting is up, otherwise the receiver and its RTCP stall.
 func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) {
-	// A video track with a rid is one layer of a simulcast sender. All layers
-	// are measured, one is forwarded, see simulcast.go.
 	var layer *simulcastLayer
 	if track.Kind() == webrtc.RTPCodecTypeVideo && track.RID() != "" {
 		layer = sess.simulcast.add(track)
@@ -610,7 +507,6 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 			select {
 			case <-sess.ready:
 				if layer != nil && !sess.simulcast.isChosen(layer) {
-					// not decided yet, or another layer won
 					continue
 				}
 				claimed = true
@@ -636,16 +532,13 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 			continue
 		}
 
-		// The header extensions belong to the WHIP negotiation (transport-cc,
-		// abs-send-time, mid, rid). Their ids mean nothing on the eyeson side,
-		// which does not negotiate extensions at all, so drop them.
+		// Extension ids are only valid on the WHIP side, eyeson negotiates none.
 		packet.Header.Extension = false
 		packet.Header.ExtensionProfile = 0
 		packet.Header.Extensions = nil
 
 		if err := target.WriteRTP(packet); err != nil {
 			if errors.Is(err, io.ErrClosedPipe) {
-				// eyeson side is gone
 				return
 			}
 			log.Warn().Err(err).Msgf("Failed to forward %s packet", track.Kind())
@@ -653,13 +546,8 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 	}
 }
 
-// requestKeyframes asks the sender for a fresh keyframe every PLIInterval.
-// ghost does not surface the keyframe requests coming from the eyeson server,
-// so a periodic request keeps late joiners from staring at a black tile.
-//
-// Forwarding usually starts in the middle of a group of pictures - always so for
-// a simulcast layer, which is only picked after it has been running for a
-// while - so one keyframe is asked for right away, whatever the interval.
+// ghost does not surface eyeson's keyframe requests, so ask periodically,
+// and once right away since forwarding starts mid-GOP.
 func (s *WHIPServer) requestKeyframes(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	pli := []rtcp.Packet{
 		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
@@ -679,17 +567,6 @@ func (s *WHIPServer) requestKeyframes(pc *webrtc.PeerConnection, track *webrtc.T
 	}
 }
 
-//
-// helpers
-//
-
-// logSDP writes one side of the WHIP handshake to the trace log. The session
-// description is printed as an indented block: it is the one log message where
-// the line breaks carry the meaning.
-//
-// This is trace rather than debug because it is a raw protocol dump, and
-// because nothing is built when the level is off - it runs on every publish and
-// an offer with all its candidates is a few kilobytes.
 func logSDP(what, sdp string) {
 	event := log.Trace()
 	if !event.Enabled() {
@@ -728,8 +605,6 @@ func (s *WHIPServer) resourceURL(r *http.Request, id string) string {
 	return fmt.Sprintf("%s://%s%s/%s", scheme, r.Host, s.cfg.Path, id)
 }
 
-// closeSession tears down the session with the given id. It reports whether a
-// session was actually closed.
 func (s *WHIPServer) closeSession(id string) bool {
 	s.mu.Lock()
 	sess := s.session
@@ -754,19 +629,15 @@ func (s *WHIPServer) notifySessionEnded() {
 	}
 }
 
-// setICELinkHeaders advertises the STUN and TURN servers to the sender.
 func (s *WHIPServer) setICELinkHeaders(w http.ResponseWriter) {
 	for _, header := range s.cfg.ICE.LinkHeaders() {
 		w.Header().Add("Link", header)
 	}
 }
 
-// newSessionID returns the opaque id used in the resource url.
 func newSessionID() string {
 	buffer := make([]byte, 16)
 	if _, err := rand.Read(buffer); err != nil {
-		// crypto/rand does not fail in practice, and a session id only has to
-		// be unguessable for as long as the session lives
 		return hex.EncodeToString([]byte(time.Now().String()))
 	}
 	return hex.EncodeToString(buffer)

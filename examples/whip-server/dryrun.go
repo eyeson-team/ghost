@@ -16,26 +16,10 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// dryRunReportInterval is how often the media counters are printed while a
-// sender is connected. Long enough to stay out of the way, short enough to see
-// that packets are still arriving.
 const dryRunReportInterval = 5 * time.Second
 
-// runDryRun serves the WHIP endpoint on its own: it prints the addresses a
-// sender can be pointed at, then reports every session that arrives, but it
-// never joins a meeting and throws the incoming media away.
-//
-// The point is the order of things. Setting up a streaming device takes longer
-// than a meeting stays open with nobody in it, so the endpoint has to exist
-// before the meeting does. In a dry run the sender can be configured, pointed at
-// an address and started once, and whether it reaches this machine is answered
-// right there - without an api key, without a meeting, and without anything
-// that could time out while the device is still being set up.
-//
-// Everything in front of the meeting works exactly as it does in a real run:
-// the same http endpoint with the same bearer token, the same codec
-// negotiation and the same ice settings. So a sender that connects here
-// connects later, and a codec that is turned down here is turned down later.
+// runDryRun serves the WHIP endpoint without joining a meeting, to test a
+// sender setup. Media is counted and dropped.
 func runDryRun() {
 	codecs, err := ParseVideoCodecs(videoCodecsFlag)
 	if err != nil {
@@ -49,7 +33,6 @@ func runDryRun() {
 		return
 	}
 
-	// No room, so there are no eyeson stun and turn servers to fall back on.
 	iceSettings, err := buildICESettings(nil)
 	if err != nil {
 		log.Error().Err(err).Msg("Invalid ice configuration")
@@ -97,26 +80,16 @@ func runDryRun() {
 	log.Info().Msg("Shutting down")
 }
 
-// dryRunMonitor stands in for the meeting connector during a dry run. It
-// hands the forwarding path a pair of sinks instead of eyeson tracks and turns
-// what happens to a session into the two lines that matter here: a sender
-// reached this server, and a sender is gone again.
 type dryRunMonitor struct {
 	mu        sync.Mutex
 	video     *countingSink
 	audio     *countingSink
 	connected bool
 	since     time.Time
-	// session counts the sessions that have ended. The reporter carries the
-	// number it started with and stops as soon as it changes, which is what
-	// ends it - pion delivers its state changes from a goroutine each, so a
-	// reporter cannot rely on being told directly.
+	// Incremented per ended session, which stops the running reporter.
 	session uint64
 }
 
-// Connect is the ConnectFunc the WHIP server calls once a session has settled
-// on a codec. There is nothing to connect to here, so it hands back two sinks
-// that count what they are given.
 func (m *dryRunMonitor) Connect(codec VideoCodec) (ghost.RTPWriter, ghost.RTPWriter, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -129,10 +102,6 @@ func (m *dryRunMonitor) Connect(codec VideoCodec) (ghost.RTPWriter, ghost.RTPWri
 	return m.video, m.audio, nil
 }
 
-// SessionState reports the state of the ingest peer connection. Only the step
-// to connected is acted on - that is the moment the sender has actually reached
-// this server, rather than merely talked to its http endpoint. Everything that
-// ends a session arrives as SessionEnded.
 func (m *dryRunMonitor) SessionState(id string, state webrtc.PeerConnectionState) {
 	if state != webrtc.PeerConnectionStateConnected {
 		return
@@ -140,7 +109,6 @@ func (m *dryRunMonitor) SessionState(id string, state webrtc.PeerConnectionState
 
 	m.mu.Lock()
 	if m.connected {
-		// ice can recover from disconnected, which comes back through here
 		m.mu.Unlock()
 		return
 	}
@@ -154,15 +122,12 @@ func (m *dryRunMonitor) SessionState(id string, state webrtc.PeerConnectionState
 	go m.report(session)
 }
 
-// SessionEnded is called whenever an ingest session goes away, connected or
-// not, and puts the endpoint back into waiting.
 func (m *dryRunMonitor) SessionEnded() {
 	ended := m.reset()
 
 	switch {
 	case !ended.Started:
-		// The WHIP server also reports the end when its http server stops,
-		// and there is no session behind that one.
+		// Also reported on http shutdown, with no session behind it.
 		return
 	case ended.Connected:
 		log.Info().Msgf("The sender disconnected after %s, received %s",
@@ -175,23 +140,17 @@ func (m *dryRunMonitor) SessionEnded() {
 	log.Info().Msg("Waiting for an incoming connection, press ctrl-c to stop")
 }
 
-// Stop ends the reporter on shutdown.
 func (m *dryRunMonitor) Stop() {
 	m.reset()
 }
 
-// dryRunSession is what one session did while it lasted.
 type dryRunSession struct {
-	// Started is set when there was a session at all.
-	Started bool
-	// Connected is set when the sender actually reached this server, rather
-	// than only its http endpoint.
+	Started   bool
 	Connected bool
 	Since     time.Time
 	Counts    mediaCounts
 }
 
-// reset clears the current session and returns what it did while it lasted.
 func (m *dryRunMonitor) reset() dryRunSession {
 	counts := m.Counts()
 
@@ -211,9 +170,6 @@ func (m *dryRunMonitor) reset() dryRunSession {
 	return ended
 }
 
-// report prints what is arriving while a sender is connected, until the session
-// ends. Connected without media means the sender is holding the connection open
-// but sending nothing, which is worth saying out loud.
 func (m *dryRunMonitor) report(session uint64) {
 	ticker := time.NewTicker(dryRunReportInterval)
 	defer ticker.Stop()
@@ -246,8 +202,6 @@ func (m *dryRunMonitor) report(session uint64) {
 	}
 }
 
-// Counts reads the counters of the current session. They are gone once the
-// session has ended, which reads as zero.
 func (m *dryRunMonitor) Counts() mediaCounts {
 	m.mu.Lock()
 	video, audio := m.video, m.audio
@@ -264,16 +218,11 @@ func (m *dryRunMonitor) Counts() mediaCounts {
 	return counts
 }
 
-// countingSink takes the place of an eyeson track during a dry run. The
-// forwarding path writes to it exactly as it writes to a meeting, so the whole
-// path from the sender to the last step is exercised, and the packets are
-// counted instead of being sent anywhere.
 type countingSink struct {
 	packets atomic.Uint64
 	bytes   atomic.Uint64
 }
 
-// WriteRTP implements ghost.RTPWriter.
 func (c *countingSink) WriteRTP(packet *rtp.Packet) error {
 	c.packets.Add(1)
 	c.bytes.Add(uint64(packet.MarshalSize()))
@@ -284,7 +233,6 @@ func (c *countingSink) Read() (uint64, uint64) {
 	return c.packets.Load(), c.bytes.Load()
 }
 
-// mediaCounts is what one session has received so far.
 type mediaCounts struct {
 	VideoPackets uint64
 	VideoBytes   uint64
@@ -292,13 +240,10 @@ type mediaCounts struct {
 	AudioBytes   uint64
 }
 
-// Bytes is everything received, of both kinds.
 func (c mediaCounts) Bytes() uint64 {
 	return c.VideoBytes + c.AudioBytes
 }
 
-// Describe renders the counters for a log line, leaving out a kind that never
-// arrived - an audio only or video only sender is a normal thing here.
 func (c mediaCounts) Describe() string {
 	parts := []string{}
 	if c.VideoPackets > 0 {

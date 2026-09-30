@@ -10,20 +10,15 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// meetingConnectTimeout bounds how long the background connect waits for the
-// eyeson side to come up before giving up on the session.
 const meetingConnectTimeout = 15 * time.Second
 
-// MeetingConnector owns the ghost client. Because ghost fixes the video codec
-// when the client is created, and the codec is only known once a WHIP sender has
-// sent its offer, the connection is established lazily and rebuilt whenever a
-// different codec is needed.
+// ghost fixes the codec when the client is created, so the connection is made
+// lazily and rebuilt when the codec changes.
 type MeetingConnector struct {
 	room          *eyeson.UserService
 	clientOptions []ghost.ClientOption
 	noAudio       bool
-	// OnTerminated is called when the meeting ends on us. It is not called for
-	// connections this connector tears down itself.
+	// Not called for connections we tear down ourselves.
 	OnTerminated func()
 
 	mu      sync.Mutex
@@ -39,7 +34,6 @@ type meetingConn struct {
 	dropped bool // set when this connection was replaced or closed by us
 }
 
-// NewMeetingConnector prepares the connector for an already joined room.
 func NewMeetingConnector(room *eyeson.UserService, clientOptions []ghost.ClientOption,
 	noAudio bool) *MeetingConnector {
 	return &MeetingConnector{
@@ -49,10 +43,7 @@ func NewMeetingConnector(room *eyeson.UserService, clientOptions []ghost.ClientO
 	}
 }
 
-// Connect returns the tracks to write to for the given video codec. An existing
-// connection using the same codec is reused, a connection using a different one
-// is replaced - which means the participant briefly leaves and rejoins the
-// meeting.
+// A different codec replaces the connection: the participant leaves and rejoins.
 func (m *MeetingConnector) Connect(codec VideoCodec) (ghost.RTPWriter, ghost.RTPWriter, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -110,7 +101,6 @@ func (m *MeetingConnector) dial(codec VideoCodec) (*meetingConn, error) {
 		dropped := conn.dropped
 		m.mu.Unlock()
 		if dropped {
-			// we closed this one ourselves, nothing to report
 			return
 		}
 		log.Info().Msg("Call terminated")
@@ -149,7 +139,7 @@ func (m *MeetingConnector) dial(codec VideoCodec) (*meetingConn, error) {
 	}
 }
 
-// dropCurrentLocked tears down the active connection. The caller holds the lock.
+// Caller holds the lock.
 func (m *MeetingConnector) dropCurrentLocked() {
 	if m.current == nil {
 		return
@@ -159,7 +149,6 @@ func (m *MeetingConnector) dropCurrentLocked() {
 	m.current = nil
 }
 
-// Close terminates the call, if there is one.
 func (m *MeetingConnector) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -12,32 +12,19 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// simulcastProbeWindow is how long the layers of a simulcast sender are
-// measured before one of them is picked. Long enough for every layer to have
-// sent its first frames, short enough not to matter against the time the
-// meeting connection takes to come up anyway.
 const simulcastProbeWindow = 1500 * time.Millisecond
 
-// SimulcastAuto picks the layer that carries the most data during the probe
-// window, which is the one with the highest resolution.
 const SimulcastAuto = "auto"
 
-// simulcastLayer is one rid of a simulcast video track.
 type simulcastLayer struct {
 	rid   string
 	track *webrtc.TrackRemote
 	bytes atomic.Uint64
 }
 
-// simulcastSelector decides which layer of a simulcast sender is forwarded.
-//
-// The meeting takes a single video stream and this example does not switch
-// layers: switching would mean waiting for a keyframe on the new layer and
-// rewriting sequence numbers and timestamps so the receiver sees one
-// continuous stream. So one layer is picked per session and the others are
-// read and dropped - they still have to be read, or their receivers stall.
+// One layer is forwarded per session, no switching. The others must still be
+// read, or their receivers stall.
 type simulcastSelector struct {
-	// forced is the rid given with --simulcast-rid, empty for auto.
 	forced string
 
 	mu      sync.Mutex
@@ -54,8 +41,6 @@ func newSimulcastSelector(rid string) *simulcastSelector {
 	return &simulcastSelector{forced: rid}
 }
 
-// add registers a layer as its track shows up. The probe window starts with
-// the first layer. A layer that was asked for by name is taken right away.
 func (s *simulcastSelector) add(track *webrtc.TrackRemote) *simulcastLayer {
 	layer := &simulcastLayer{rid: track.RID(), track: track}
 
@@ -78,8 +63,6 @@ func (s *simulcastSelector) add(track *webrtc.TrackRemote) *simulcastLayer {
 	return layer
 }
 
-// pick runs once the probe window is over and takes the busiest layer, unless
-// a layer has been chosen already.
 func (s *simulcastSelector) pick() {
 	if s.chosen.Load() != nil {
 		return
@@ -121,28 +104,16 @@ func (s *simulcastSelector) choose(layer *simulcastLayer, reason string) {
 		layer.rid, reason)
 }
 
-// isChosen reports whether this layer is the one to forward. It is false for
-// every layer until the choice has been made.
 func (s *simulcastSelector) isChosen(layer *simulcastLayer) bool {
 	return s.chosen.Load() == layer
 }
 
-// Simulcast modes, see --simulcast.
-//
-// Decline is the default: only one stream is forwarded anyway, and a sender
-// that falls back to a single stream saves itself the encoding of layers that
-// would be dropped here. Not every sender falls back - OBS refuses to stream
-// with fewer layers than it is configured for, with a clear message - and
-// select is there for those.
+// Decline is the default: only one stream is forwarded anyway.
 const (
-	// SimulcastSelect accepts simulcast and forwards one of the layers.
-	SimulcastSelect = "select"
-	// SimulcastDecline answers without simulcast, which tells the sender to
-	// send a single stream instead.
+	SimulcastSelect  = "select"
 	SimulcastDecline = "decline"
 )
 
-// ParseSimulcastMode checks the value of --simulcast.
 func ParseSimulcastMode(mode string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case SimulcastSelect:
@@ -155,16 +126,8 @@ func ParseSimulcastMode(mode string) (string, error) {
 	}
 }
 
-// DeclineSimulcast removes simulcast from an offer before it is answered, and
-// reports whether there was any. pion builds the answer from what the offer
-// asked for, so without the rid and simulcast lines the answer carries no
-// simulcast either - which is how RFC 8853 section 5.3 lets an answerer turn
-// it down. A sender that follows JSEP then sends only its first encoding.
-//
-// The rid header extensions go too: once simulcast is declined there are no
-// rids to carry, and a packet that arrives with one anyway would be looked up
-// as a simulcast layer and dropped. The mid extension stays, it is what bundle
-// demultiplexing uses.
+// Strips rid and simulcast lines (RFC 8853 section 5.3) and the rid extensions.
+// mid stays, bundle needs it.
 func DeclineSimulcast(offer string) (string, bool) {
 	lineEnd := "\n"
 	if strings.Contains(offer, "\r\n") {

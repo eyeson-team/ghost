@@ -1,16 +1,5 @@
-// whip-server is a ghost example that turns an eyeson meeting into a WHIP
-// ingest endpoint.
-//
-// A WHIP sender (OBS Studio, GStreamer whipsink, ffmpeg, a browser, ...)
-// publishes its WebRTC stream to this server. The received RTP packets are
-// forwarded, without transcoding, into an eyeson meeting through the ghost
-// client.
-//
-//	OBS ──WHIP (HTTP + WebRTC)──▶ whip-server ──ghost/SEPP (WebRTC)──▶ eyeson meeting
-//
-// The video codec is not fixed: it is negotiated with the sender and the eyeson
-// connection is then built to match, so a VP9 or AV1 capable sender keeps its
-// codec all the way into the meeting.
+// whip-server forwards a WHIP ingest stream into an eyeson meeting via ghost,
+// without transcoding.
 package main
 
 import (
@@ -30,7 +19,7 @@ import (
 )
 
 var (
-	// Version is set at build time, see build.sh.
+	// Version is set at build time.
 	Version = "dev"
 )
 
@@ -66,9 +55,7 @@ var (
 	rootCommand = &cobra.Command{
 		Use:   "whip-server [flags] $API_KEY|$GUEST_LINK",
 		Short: "WHIP ingest endpoint that forwards into an eyeson meeting",
-		// --dry-run never talks to the eyeson api, so it needs no credentials.
-		// Cobra parses the flags before it validates the arguments, so the flag
-		// can be consulted here.
+		// --dry-run needs no credentials. Flags are already parsed at this point.
 		Args: func(cmd *cobra.Command, args []string) error {
 			if dryRunFlag || len(args) > 0 {
 				return nil
@@ -89,28 +76,18 @@ var (
 	}
 )
 
-// Logger maps the ghost logger interface onto zerolog.
 type Logger struct{}
 
-// Error logs an error message.
 func (sl *Logger) Error(format string, v ...interface{}) { log.Error().Msgf(format, v...) }
 
-// Warn logs a warning message.
 func (sl *Logger) Warn(format string, v ...interface{}) { log.Warn().Msgf(format, v...) }
 
-// Info logs an info message.
 func (sl *Logger) Info(format string, v ...interface{}) { log.Info().Msgf(format, v...) }
 
-// Debug logs a debug message.
 func (sl *Logger) Debug(format string, v ...interface{}) { log.Debug().Msgf(format, v...) }
 
-// Trace logs a trace message.
 func (sl *Logger) Trace(format string, v ...interface{}) { log.Trace().Msgf(format, v...) }
 
-// initLogging maps the two flags onto zerolog levels. The split is what goes
-// into them: --verbose is the per session detail you want while something is
-// misbehaving, --trace adds the raw protocol dumps (the WHIP SDP, the data
-// channel traffic), which are too bulky to carry along by default.
 func initLogging() {
 	switch {
 	case traceFlag:
@@ -164,8 +141,6 @@ func main() {
 	rootCommand.Execute()
 }
 
-// getRoom returns a room depending on the provided api-key or guest link.
-// This is the same helper the rtmp-server and rtsp-client examples use.
 func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string,
 	insecure bool) (*eyeson.UserService, error) {
 	clientOptions := []eyeson.ClientOption{}
@@ -176,10 +151,8 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 		clientOptions = append(clientOptions, eyeson.WithInsecureSkipVerify())
 	}
 
-	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
-		// join as guest
-		// guest-link: https://app.eyeson.team/?guest=h7IHRfwnV6Yuk3QtL2jbktuh
+		// guest link: https://app.eyeson.team/?guest=<token>
 		u, err := url.Parse(apiKeyOrGuestlink)
 		if err != nil {
 			return nil, fmt.Errorf("invalid guest-link")
@@ -201,7 +174,6 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 		return client.Rooms.GuestJoin(guestToken[0], userID, user, "")
 	}
 
-	// let's assume we have an apiKey, so fire up a new meeting
 	client, err := eyeson.NewClient(apiKeyOrGuestlink, clientOptions...)
 	if err != nil {
 		return nil, err
@@ -219,7 +191,6 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 }
 
 func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID string) {
-
 	codecs, err := ParseVideoCodecs(videoCodecsFlag)
 	if err != nil {
 		log.Error().Err(err).Msg("Invalid --video-codecs")
@@ -272,8 +243,7 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 		}
 	}
 
-	// The meeting is joined lazily: which video codec ghost has to use is only
-	// known once a sender has published its offer.
+	// Joined lazily: the video codec is only known once a sender has offered.
 	connector := NewMeetingConnector(room, ghostOptions, noAudioFlag)
 	connector.OnTerminated = done
 	defer connector.Close()
@@ -306,7 +276,6 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 
 	log.Info().Msgf("Waiting for a WHIP sender, accepted video codecs: %s", videoCodecsFlag)
 
-	// install signal-handler
 	chStop := make(chan os.Signal, 1)
 	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -319,14 +288,7 @@ func whipServerExample(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID stri
 	connector.Close()
 }
 
-// buildICESettings collects the stun and turn servers for the ingest peer
-// connection. By default the ones the eyeson api handed out for this room are
-// reused - they are already there, they are close to the meeting, and unlike a
-// public stun server the turn entry also works when both ends sit behind a
-// symmetric NAT.
-//
-// The room may be nil, which is how a dry run gets here: no meeting was
-// joined, so there is nothing to inherit and only --ice-servers is left.
+// Defaults to the room's stun/turn servers. room is nil on a dry run.
 func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	settings := ICESettings{
 		PublicIP:  publicIPFlag,
@@ -354,8 +316,6 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	settings.UDPPortMax = portMax
 
 	if settings.Lite && len(settings.Servers) > 0 {
-		// A lite agent offers its host candidates and nothing else, so a stun
-		// or turn server would only slow the answer down.
 		log.Info().Msg("ICE: lite mode, ignoring the stun and turn servers")
 		settings.Servers = nil
 	}
@@ -366,8 +326,7 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 
 	log.Info().Msgf("ICE: using %d server(s)", len(settings.Servers))
 
-	// A rewritten host candidate is only reachable if the router maps the same
-	// port through, which needs a fixed range to write the rule against.
+	// Rewritten host candidates need a fixed port range to forward on the router.
 	if settings.PublicIP != "" && settings.UDPPortMin == 0 {
 		log.Warn().Msg("--public-ip without --udp-port-range: the media port is " +
 			"picked at random, so it cannot be forwarded through a router")
@@ -376,7 +335,6 @@ func buildICESettings(room *eyeson.UserService) (ICESettings, error) {
 	return settings, nil
 }
 
-// eyesonICEServers turns what the eyeson api returned into ice servers.
 func eyesonICEServers(room *eyeson.UserService) []ICEServer {
 	servers := []ICEServer{}
 

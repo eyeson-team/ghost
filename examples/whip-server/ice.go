@@ -9,54 +9,34 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
-// ICEServersNone disables ice servers entirely, for a server that is directly
-// reachable and does not want to wait for anything.
 const ICEServersNone = "none"
 
-// ICEServer is one stun or turn server, with the credentials it needs.
 type ICEServer struct {
 	URL      string
 	Username string
 	Password string
 }
 
-// ICESettings describes how the ingest peer connection reaches the WHIP sender.
-//
-// Two separate things live in here. The servers are used by this server to
-// gather its own candidates, which is what usually decides whether a connection
-// works at all: the sender dials us, so our candidates have to be reachable.
-// PublicIP and the UDP port range cover the two deployment cases where that
-// goes wrong on its own - a cloud VM behind 1:1 NAT, and a firewall that only
-// opens a fixed port range.
 type ICESettings struct {
 	Servers []ICEServer
 
-	// PublicIP replaces the address of host candidates. Needed on cloud VMs
-	// where the machine only sees its private address.
+	// Replaces the host candidate address, e.g. behind 1:1 NAT.
 	PublicIP string
 
-	// UDPPortMin and UDPPortMax restrict ICE to a fixed port range, so a
-	// firewall rule can be written for it. Zero means any port.
+	// Zero means any port.
 	UDPPortMin uint16
 	UDPPortMax uint16
 
-	// Advertise sends the servers to the sender via WHIP Link headers.
 	Advertise bool
 
-	// Lite runs the ingest agent as an ICE-lite agent: it gathers host
-	// candidates only, sends no connectivity checks of its own, and answers
-	// the ones the sender sends. That is how most media servers behave, and
-	// some senders only start sending once the server has declared itself
-	// lite. It requires this server to be directly reachable by the sender.
+	// Requires this server to be directly reachable.
 	Lite bool
 }
 
-// ParseICEServers reads a comma separated list of ice server urls. Credentials
-// are given inline, which keeps this to one flag instead of four:
+// Credentials go inline:
 //
 //	stun:stun.example.com:3478
 //	turn:user:pass@turn.example.com:3478?transport=udp
-//	turns:user:pass@turn.example.com:5349
 func ParseICEServers(list string) ([]ICEServer, error) {
 	servers := []ICEServer{}
 
@@ -96,7 +76,6 @@ func ParseICEServers(list string) ([]ICEServer, error) {
 	return servers, nil
 }
 
-// ParseUDPPortRange reads a "min-max" port range.
 func ParseUDPPortRange(value string) (uint16, uint16, error) {
 	if strings.TrimSpace(value) == "" {
 		return 0, 0, nil
@@ -119,7 +98,6 @@ func ParseUDPPortRange(value string) (uint16, uint16, error) {
 	return uint16(min), uint16(max), nil
 }
 
-// ICEServers builds the pion ice server list.
 func (i ICESettings) ICEServers() []webrtc.ICEServer {
 	servers := make([]webrtc.ICEServer, 0, len(i.Servers))
 	for _, server := range i.Servers {
@@ -132,9 +110,6 @@ func (i ICESettings) ICEServers() []webrtc.ICEServer {
 	return servers
 }
 
-// Validate checks the settings that can only fail much later otherwise - a
-// public ip that is not an ip is not noticed until the first sender publishes
-// and the answer cannot be built.
 func (i ICESettings) Validate() error {
 	if i.PublicIP == "" {
 		return nil
@@ -146,13 +121,10 @@ func (i ICESettings) Validate() error {
 	return nil
 }
 
-// SettingEngine applies the NAT, port range and ice mode settings.
 func (i ICESettings) SettingEngine() (webrtc.SettingEngine, error) {
 	engine := webrtc.SettingEngine{}
 
 	if i.Lite {
-		// A lite agent keeps its host candidates and waits to be pinged, so
-		// stun and turn have nothing to contribute here.
 		engine.SetLite(true)
 	}
 
@@ -169,9 +141,7 @@ func (i ICESettings) SettingEngine() (webrtc.SettingEngine, error) {
 	return engine, nil
 }
 
-// LinkHeaders renders the ice servers as WHIP Link header values, as described
-// in RFC 9725 section 4.4. Senders that read them can use the same servers for
-// their own candidate gathering.
+// RFC 9725 section 4.4.
 func (i ICESettings) LinkHeaders() []string {
 	if !i.Advertise {
 		return nil

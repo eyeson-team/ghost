@@ -9,17 +9,10 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// trickleContentType is the media type of an ICE fragment, RFC 8840. WHIP
-// senders that gather their candidates after the offer send them as PATCH
-// bodies of this type, RFC 9725 section 4.2.
+// RFC 8840.
 const trickleContentType = "application/trickle-ice-sdpfrag"
 
-// handleTrickle takes the ice candidates a sender sends in after the answer.
-//
-// A sender whose offer carries no candidates at all - an ice-lite sender, or
-// one that starts publishing before gathering is done - has no other way to
-// tell this server where to send its connectivity checks, so turning PATCH
-// down means such a session can never connect.
+// Needed for senders whose offer carries no candidates.
 func (s *WHIPServer) handleTrickle(w http.ResponseWriter, r *http.Request, resourceID string) {
 	if !s.authorized(r) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
@@ -36,8 +29,7 @@ func (s *WHIPServer) handleTrickle(w http.ResponseWriter, r *http.Request, resou
 		return
 	}
 
-	// An application/sdp body would be an ice restart, which this example does
-	// not do: the sender can simply publish again.
+	// application/sdp would be an ice restart, which is not supported.
 	if contentType := r.Header.Get("Content-Type"); !strings.HasPrefix(contentType, trickleContentType) {
 		log.Warn().Msgf("PATCH with content-type %q, only %s is supported",
 			contentType, trickleContentType)
@@ -76,10 +68,6 @@ func (s *WHIPServer) handleTrickle(w http.ResponseWriter, r *http.Request, resou
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ParseICEFragment reads the candidates out of an RFC 8840 ice fragment. The
-// mid and the m-line index are carried along when the fragment has them, and
-// the ufrag is taken from the session or media level line that precedes the
-// candidates.
 func ParseICEFragment(fragment string) ([]webrtc.ICECandidateInit, bool) {
 	candidates := []webrtc.ICECandidateInit{}
 	endOfCandidates := false
