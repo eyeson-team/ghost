@@ -1,3 +1,4 @@
 vendor/
 *.mp4
 *.ivf
+.DS_Store
