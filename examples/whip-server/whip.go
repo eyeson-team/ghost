@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,7 @@ import (
 	log "github.com/rs/zerolog/log"
 )
 
-// RFC 8852, not yet a constant in pion/sdp.
+// RFC 8852, missing in pion/sdp.
 const sdesRepairRTPStreamIDURI = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
 
 const iceGatherTimeout = 2 * time.Second
@@ -28,25 +29,21 @@ const iceGatherTimeout = 2 * time.Second
 type ConnectFunc func(codec VideoCodec) (video ghost.RTPWriter, audio ghost.RTPWriter, err error)
 
 type WHIPConfig struct {
-	ListenAddr  string
-	Path        string
-	BearerToken string
-	TLSCertFile string
-	TLSKeyFile  string
-	ICE         ICESettings
-	// Most preferred first.
-	VideoCodecs []VideoCodec
-	// Zero disables periodic keyframe requests.
-	PLIInterval time.Duration
-	Simulcast   string
-	// Empty or "auto" picks the layer with the highest bitrate.
+	ListenAddr     string
+	Path           string
+	BearerToken    string
+	TLSCertFile    string
+	TLSKeyFile     string
+	ICE            ICESettings
+	VideoCodecs    []VideoCodec
+	PLIInterval    time.Duration
+	Simulcast      string
 	SimulcastRID   string
 	Connect        ConnectFunc
 	OnSessionEnded func()
 	OnSessionState func(id string, state webrtc.PeerConnectionState)
 }
 
-// WHIPServer accepts one publishing session at a time.
 type WHIPServer struct {
 	cfg WHIPConfig
 
@@ -59,14 +56,12 @@ type whipSession struct {
 	pc    *webrtc.PeerConnection
 	codec VideoCodec
 
-	// Closed once the meeting is connected (or failed). Packets before that are dropped.
 	ready chan struct{}
 
 	video  ghost.RTPWriter
 	audio  ghost.RTPWriter
 	closed bool
 
-	// Only the first track per kind is forwarded.
 	videoTaken bool
 	audioTaken bool
 
@@ -198,10 +193,9 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Also decides whether to answer as an ice-lite agent.
 	offerICE := LogOfferICE(offer)
 
-	// Compare formats, not just names: VP9 may be offered in an unsupported profile.
+	// VP9 may come in an unsupported profile.
 	offeredVideo, err := OfferedVideoFormats(offer)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to parse the sdp offer")
@@ -216,7 +210,6 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only Opus can be forwarded. Other audio is rejected, the session still comes up.
 	hasAudio := len(offeredAudio) > 0
 	forwardAudio := OffersOpus(offeredAudio)
 	if hasAudio && !forwardAudio {
@@ -234,7 +227,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	case ok:
 		log.Info().Msgf("Sender offers video as %v, using %s", offeredVideoCodecs, codec.Name)
 	case len(offeredVideo) == 0 && forwardAudio:
-		// Audio only: ghost always creates a video track, so pick a codec anyway.
+		// ghost always needs a video track.
 		codec = s.cfg.VideoCodecs[0]
 		log.Info().Msg("Sender offers no video, publishing audio only")
 	case len(offeredVideo) == 0:
@@ -248,7 +241,6 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One publisher at a time, a new offer takes over.
 	s.mu.Lock()
 	previous := s.session
 	s.mu.Unlock()
@@ -273,7 +265,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		simulcast: newSimulcastSelector(s.cfg.SimulcastRID),
 	}
 
-	// Answer first and connect in parallel, senders time out before a cold ghost connect.
+	// Senders time out before a cold meeting connect.
 	go s.connectMeeting(sess, forwardAudio)
 
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -315,7 +307,7 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bounded, so a slow TURN allocation cannot hold up the answer.
+	// A slow TURN allocation must not delay the answer.
 	gatherComplete := webrtc.GatheringCompletePromise(pc)
 	if err := pc.SetLocalDescription(answer); err != nil {
 		log.Error().Err(err).Msg("Failed to set local description")
@@ -339,11 +331,15 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	answerSDP := pc.LocalDescription().SDP
+	// Some senders only try the first host candidate.
+	answerSDP = preferHostCandidate(answerSDP, requestLocalIP(r))
 	logSDP("Answer to the WHIP sender", answerSDP)
 
 	w.Header().Set("Content-Type", "application/sdp")
+	// Chunked answers (Go, over 2 KB) break FFmpeg.
+	w.Header().Set("Content-Length", strconv.Itoa(len(answerSDP)))
 	w.Header().Set("Location", s.resourceURL(r, sess.id))
-	// RFC 9725 section 4.2: some senders only PATCH after seeing an ETag.
+	// RFC 9725 4.2: some senders only PATCH after an ETag.
 	w.Header().Set("ETag", `"`+sess.id+`"`)
 	s.setICELinkHeaders(w)
 	w.WriteHeader(http.StatusCreated)
@@ -354,7 +350,6 @@ func (s *WHIPServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	log.Info().Msgf("WHIP session %s established", sess.id)
 }
 
-// lite forces an ice-lite answer for this session, see OfferICE.NeedsLiteAnswer.
 func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webrtc.PeerConnection, error) {
 	m := &webrtc.MediaEngine{}
 
@@ -364,7 +359,7 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		{Type: "goog-remb"},
 	}
 
-	// The fmtp line pins senders offering several VP9 profiles to profile 0.
+	// Pins VP9 to profile 0.
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{
 			MimeType:     codec.MimeType,
@@ -389,7 +384,7 @@ func (s *WHIPServer) newIngestPeerConnection(codec VideoCodec, lite bool) (*webr
 		return nil, err
 	}
 
-	// pion drops simulcast layers unless mid and rid are in the answer.
+	// pion drops simulcast layers without mid and rid.
 	for _, extension := range []struct {
 		uri  string
 		kind webrtc.RTPCodecType
@@ -454,7 +449,18 @@ func (s *WHIPServer) connectMeeting(sess *whipSession, forwardAudio bool) {
 	sess.audio = audio
 	s.mu.Unlock()
 
+	s.mu.Lock()
+	closed := sess.closed
+	s.mu.Unlock()
+
 	close(sess.ready)
+
+	if closed {
+		log.Info().Msgf("Meeting connection ready after %s, but WHIP session %s "+
+			"already ended, keeping the connection for the next sender",
+			time.Since(start).Round(time.Millisecond), sess.id)
+		return
+	}
 
 	log.Info().Msgf("Meeting connection ready after %s, forwarding starts now",
 		time.Since(start).Round(time.Millisecond))
@@ -479,7 +485,7 @@ func (s *WHIPServer) claimTarget(sess *whipSession, track *webrtc.TrackRemote) g
 	return sess.audio
 }
 
-// Read even before the meeting is up, otherwise the receiver and its RTCP stall.
+// Reads before the meeting is up too, or RTCP stalls.
 func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) {
 	var layer *simulcastLayer
 	if track.Kind() == webrtc.RTPCodecTypeVideo && track.RID() != "" {
@@ -532,7 +538,7 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 			continue
 		}
 
-		// Extension ids are only valid on the WHIP side, eyeson negotiates none.
+		// Extension ids are only valid on the WHIP side.
 		packet.Header.Extension = false
 		packet.Header.ExtensionProfile = 0
 		packet.Header.Extensions = nil
@@ -546,8 +552,7 @@ func (s *WHIPServer) forwardTrack(sess *whipSession, track *webrtc.TrackRemote) 
 	}
 }
 
-// ghost does not surface eyeson's keyframe requests, so ask periodically,
-// and once right away since forwarding starts mid-GOP.
+// ghost does not surface eyeson's keyframe requests.
 func (s *WHIPServer) requestKeyframes(pc *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	pli := []rtcp.Packet{
 		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
@@ -648,4 +653,73 @@ func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Methods", "POST, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.Header().Set("Access-Control-Expose-Headers", "Location, Link")
+}
+
+// nil for loopback, pion gathers no loopback candidates.
+func requestLocalIP(r *http.Request) net.IP {
+	addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return nil
+	}
+	tcpAddr, ok := addr.(*net.TCPAddr)
+	if !ok || tcpAddr.IP.IsLoopback() {
+		return nil
+	}
+	return tcpAddr.IP
+}
+
+// Moves the host candidate on preferIP, else the first IPv4 one, to the front.
+// Only line order changes, priorities stay.
+func preferHostCandidate(sdpText string, preferIP net.IP) string {
+	lines := strings.Split(strings.TrimRight(sdpText, "\r\n"), "\r\n")
+
+	first, best, bestScore := -1, -1, 0
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "a=candidate:") {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 8 || fields[6] != "typ" || fields[7] != "host" ||
+			!strings.EqualFold(fields[2], "udp") {
+			continue
+		}
+		ip := net.ParseIP(fields[4])
+		score := 1
+		if ip != nil && ip.To4() != nil {
+			score = 2
+		}
+		if ip != nil && preferIP != nil && ip.Equal(preferIP) {
+			score = 3
+		}
+		if score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	if first < 0 || best <= first {
+		return sdpText
+	}
+
+	chosen := strings.Fields(lines[best])
+	var picked, rest []string
+	count := 0
+	for i := first; i < len(lines) && strings.HasPrefix(lines[i], "a=candidate:"); i++ {
+		fields := strings.Fields(lines[i])
+		if len(fields) > 5 && fields[0] == chosen[0] &&
+			fields[4] == chosen[4] && fields[5] == chosen[5] {
+			picked = append(picked, lines[i])
+		} else {
+			rest = append(rest, lines[i])
+		}
+		count++
+	}
+
+	out := make([]string, 0, len(lines))
+	out = append(out, lines[:first]...)
+	out = append(out, picked...)
+	out = append(out, rest...)
+	out = append(out, lines[first+count:]...)
+	return strings.Join(out, "\r\n") + "\r\n"
 }

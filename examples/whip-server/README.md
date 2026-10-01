@@ -86,10 +86,42 @@ gst-launch-1.0 \
   whipsink name=whip whip-endpoint=http://127.0.0.1:8100/whip auth-token=s3cr3t
 ```
 
+### FFmpeg
+
+FFmpeg has a WHIP muxer since version 8.0. It sends H264 and stereo Opus at
+48 kHz only, so transcode to that. This streams a video file in a loop until
+Ctrl-C:
+
+```sh
+ffmpeg -re -i video.mp4 \
+  -map 0:v:0 -map '0:a:0?' \
+  -c:v libx264 -preset veryfast -tune zerolatency -bf 0 -g 25 -r 25 \
+  -b:v 2350k -maxrate 2350k -bufsize 4700k \
+  -c:a libopus -b:a 128k -ac 2 -ar 48000 \
+  -f whip http://127.0.0.1:8100/whip
+```
+
+| Option                       | Why                                                        |
+| ---------------------------- | ---------------------------------------------------------- |
+| `-re`                        | read the file in real time instead of as fast as possible  |
+| `-map '0:a:0?'`              | the `?` makes audio optional, for files without any        |
+| `-bf 0`                      | the eyeson media server does not support B-frames          |
+| `-g 25`                      | a keyframe every second at `-r 25`, for later participants |
+| `-ac 2 -ar 48000`            | the muxer rejects mono, surround and other sample rates    |
+
+`-tune zerolatency` already turns B-frames off for x264, `-bf 0` keeps it that
+way if you change the tuning or the encoder. Quote `'0:a:0?'`, zsh treats an
+unquoted `?` as a wildcard. If the server runs with `--bearer-token`, pass the
+same token as `-authorization s3cr3t` before the url.
+
+When the stream stops, FFmpeg logs `Failed to read response from DELETE` and
+`Failed to dispose resource`. That is a bug in FFmpeg's http client, the DELETE
+does reach this server and the session is closed properly.
+
 ### Anything else
 
-Any WHIP client works: `ffmpeg -f whip`, Broadcast Box, or a few lines of browser
-JavaScript. A browser is the easiest way to send VP9 or AV1.
+Any WHIP client works: Broadcast Box, or a few lines of browser JavaScript. A
+browser is the easiest way to send VP9 or AV1.
 
 When you encode H264 or H265 yourself, turn B-frames off there too, e.g. `-bf 0`
 in ffmpeg or `bframes=0` on the GStreamer `x264enc`.

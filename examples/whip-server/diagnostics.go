@@ -88,8 +88,9 @@ func LogOfferICE(offer string) OfferICE {
 		log.Info().Msg("The offer announces ice-lite and carries no candidates: " +
 			"answering as a lite agent, so the sender drives the connection")
 	default:
-		log.Warn().Msg("The offer carries no ice candidates: the sender has to trickle " +
-			"them in with PATCH, otherwise this session cannot connect.")
+		log.Info().Msg("The offer carries no ice candidates: expecting the sender " +
+			"to trickle them in with PATCH, or to be learned as a peer reflexive " +
+			"candidate from its STUN checks")
 	}
 
 	return summary
