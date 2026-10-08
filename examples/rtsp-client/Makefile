@@ -3,7 +3,7 @@ default: build
 
 .PHONY: build
 build:
-	@go build -o bin/rtsp-client .
+	@go build -o bin/rtsp-client main.go
 
 build-cgo:
 	CGO_ENABLED=0 go build  -a -installsuffix cgo -o bin/rtsp-client *.go

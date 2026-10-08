@@ -44,31 +44,17 @@ var (
 	quietFlag              bool
 	customCAFileFlag       string
 	insecureSkipVerifyFlag bool
-	checkFlag              bool
 
 	rootCommand = &cobra.Command{
 		Use:   "rtsp-client [flags] $API_KEY|$GUEST_LINK RTSP_CONNECT_URL",
 		Short: "rtsp-client",
 		Example: `  rtsp-client $API_KEY rtsp://cam.local:554/stream
-  rtsp-client $GUEST_LINK rtsp://user:pass@cam.local/stream
-  rtsp-client --check rtsp://cam.local:554/stream`,
-		Args: func(cmd *cobra.Command, args []string) error {
-			if checkFlag {
-				// api key / guest link is optional and ignored
-				return cobra.RangeArgs(1, 2)(cmd, args)
-			}
-			return cobra.MinimumNArgs(2)(cmd, args)
-		},
+  rtsp-client $GUEST_LINK rtsp://user:pass@cam.local/stream`,
+		Args: cobra.MinimumNArgs(2),
 		PreRun: func(cmd *cobra.Command, args []string) {
 
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			if checkFlag {
-				if !runRtspCheck(args[len(args)-1]) {
-					os.Exit(1)
-				}
-				return
-			}
 			rtspClientExample(args[0], args[1], apiEndpointFlag,
 				userFlag, roomIDFlag, userIDFlag)
 		},
@@ -147,7 +133,6 @@ func main() {
 	rootCommand.Flags().BoolVarP(&passThroughFlag, "passthrough", "", false, "if true just passthrough all H264 NAL-Units")
 	rootCommand.Flags().StringVarP(&customCAFileFlag, "custom-ca", "", "", "custom CA file")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
-	rootCommand.Flags().BoolVarP(&checkFlag, "check", "", false, "Only check the RTSP source (reachability, audio/video data) without joining a meeting")
 
 	rootCommand.Execute()
 }
