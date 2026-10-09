@@ -19,3 +19,4 @@ build-platforms:
 	bash build.sh build_n_pack linux amd64
 	bash build.sh build_n_pack linux arm
 	bash build.sh build_n_pack linux arm64
+
