@@ -6,7 +6,7 @@ require (
 	github.com/ebml-go/webm v0.0.0-20221117133942-84fa5245cf70
 	github.com/eyeson-team/eyeson-go v1.8.0
 	github.com/eyeson-team/ghost/v2 v2.9.9
-	github.com/pion/rtp v1.8.7-0.20240429002300-bc5124c9d0d0
+	github.com/pion/rtp v1.10.5
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.0
 )
@@ -40,7 +40,7 @@ require (
 	github.com/pion/webrtc/v3 v3.2.42 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	github.com/stretchr/testify v1.9.0 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	golang.org/x/crypto v0.24.0 // indirect
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect

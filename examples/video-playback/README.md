@@ -10,7 +10,6 @@ and the picture keeps its original quality.
 
 ```
 ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE
-ghost-player --check VIDEO_FILE
 ```
 
 ```sh
@@ -32,66 +31,46 @@ Container: **WebM** or **Matroska** (`.webm`, `.mkv`).
 
 | | Supported |
 | --- | --- |
-| Video | VP8, VP9, AV1, H264 |
+| Video | VP8, VP9, AV1, H264, H265 |
 | Audio | Opus |
 
 If the audio is in another format the video still plays, without sound. If the
 video is in another format, or the file is in another container such as MP4,
 playback is refused.
 
+H264 and H265 video must not contain **B-frames**: the eyeson media server
+cannot display them, and the picture stays black. The player keeps streaming
+such a file, but logs a warning. For a quick start, also use a keyframe every
+2 seconds, otherwise the picture only appears at the next keyframe.
+
 Any tool that writes Matroska can prepare a file, for example:
 
 ```sh
-# already a supported codec, just rewrap and convert the audio
+# already a supported codec without B-frames, just rewrap and convert the audio
 ffmpeg -i input.mp4 -c:v copy -c:a libopus -ac 1 output.mkv
 
-# anything else, H265 included, needs the video transcoded
-ffmpeg -i input.mp4 -c:v libx264 -c:a libopus -ac 1 output.mkv
+# anything else needs the video transcoded, as H264 ...
+ffmpeg -i input.mp4 -c:v libx264 -bf 0 \
+  -force_key_frames "expr:gte(t,n_forced*2)" -c:a libopus -ac 1 output.mkv
+
+# ... or as H265
+ffmpeg -i input.mp4 -c:v libx265 -x265-params "bframes=0:open-gop=0" \
+  -force_key_frames "expr:gte(t,n_forced*2)" -forced-idr 1 -c:a libopus -ac 1 output.mkv
 ```
 
-## Checking a file first
-
-`--check` reports what a file contains and whether it can be played. It reads
-the file header only, and never joins a meeting:
+To check whether a file has B-frames:
 
 ```sh
-ghost-player --check clip.mkv
-```
-
-```
-clip.mkv
-
-  Container   matroska, 12m14s
-  Resolution  1280x534 @ 24.00 fps
-  Video       H264, supported
-  Audio       Opus, supported
-
-  PLAYABLE
-```
-
-The frame rate is shown only if the file's header declares one.
-
-| Result | Meaning | Exit code |
-| --- | --- | --- |
-| `PLAYABLE` | container and video codec are supported | 0 |
-| `NOT PLAYABLE` | unsupported container or video codec | 1 |
-
-An unsupported audio codec does not make a file unplayable: it is reported,
-and the video plays without sound.
-
-The exit codes make it usable as a gate:
-
-```sh
-ghost-player --check clip.mkv && ghost-player $API_KEY clip.mkv
+ffprobe -v error -select_streams v:0 -show_entries stream=has_b_frames -of default=nw=1 input.mkv
 ```
 
 ## Flags
 
 | Flag | |
 | --- | --- |
-| `--check` | Report the file's container, resolution and codecs, then exit without connecting. |
 | `--loop` | Restart playback at the end of the file. Default on. |
 | `--no-audio` | Never send audio, even when the format matches. |
+| `--start-delay` | Wait after connecting before playback starts, so the first keyframe isn't lost. Default `2s`. |
 | `--room-id` | Join a specific room instead of creating a meeting. |
 | `--user` | Display name in the meeting. Default `ghost-player`. |
 | `--widescreen` | Start the room in widescreen. Default on. |

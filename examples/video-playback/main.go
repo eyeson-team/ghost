@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,22 +43,13 @@ var (
 	loopFlag               bool
 	insecureSkipVerifyFlag bool
 	noAudioFlag            bool
-	checkFlag              bool
+	startDelayFlag         time.Duration
 
 	rootCommand = &cobra.Command{
-		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE\n  ghost-player --check VIDEO_FILE",
+		Use:   "ghost-player [flags] $API_KEY|$GUEST_LINK VIDEO_FILE",
 		Short: "ghost-player",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			if checkFlag {
-				os.Exit(checkFile(args[len(args)-1]))
-			}
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr,
-					"need an API key or guest link and a video file, or --check with just a video file")
-				cmd.Usage()
-				os.Exit(2)
-			}
 			videoPlayerExample(args[0], args[1], apiEndpointFlag,
 				userFlag, roomIDFlag, userIDFlag)
 		},
@@ -72,8 +64,6 @@ const (
 	codecIDH264   = "V_MPEG4/ISO/AVC"
 	codecIDH265   = "V_MPEGH/ISO/HEVC"
 	codecIDOpus   = "A_OPUS"
-	codecIDVorbis = "A_VORBIS"
-	codecIDAAC    = "A_AAC"
 )
 
 const (
@@ -91,7 +81,6 @@ const (
 	audioQueueDepth = 50
 )
 
-// frameRewriter adapts a container frame for the payloader; nil passes it through.
 type frameRewriter func(frame []byte, keyframe bool) []byte
 
 type videoSupport struct {
@@ -99,7 +88,6 @@ type videoSupport struct {
 	build       func(codecPrivate []byte) (rtp.Payloader, frameRewriter, error)
 }
 
-// H265 is missing because pion has no payloader for it yet.
 var supportedVideoCodecs = map[string]videoSupport{
 	codecIDVP8: {
 		ghostOption: ghost.WithForceVP8Codec(),
@@ -129,6 +117,16 @@ var supportedVideoCodecs = map[string]videoSupport{
 			return &codecs.H264Payloader{}, rewrite, nil
 		},
 	},
+	codecIDH265: {
+		ghostOption: ghost.WithForceH265Codec(),
+		build: func(codecPrivate []byte) (rtp.Payloader, frameRewriter, error) {
+			rewrite, err := newHVCCToAnnexB(codecPrivate)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &codecs.H265Payloader{}, rewrite, nil
+		},
+	},
 }
 
 const (
@@ -141,8 +139,7 @@ const (
 	obuTypeShift         = 3
 )
 
-// av1TemporalUnitPayloader splits a Matroska block (a whole temporal unit)
-// into OBUs, since pion's AV1Payloader panics when given more than one.
+// pion's AV1Payloader panics on more than one OBU.
 type av1TemporalUnitPayloader struct {
 	inner codecs.AV1Payloader
 }
@@ -155,7 +152,7 @@ func (p *av1TemporalUnitPayloader) Payload(mtu uint16, temporalUnit []byte) [][]
 	return payloads
 }
 
-// splitOBUs drops temporal delimiters and padding, as the AV1 RTP spec requires.
+// The AV1 RTP spec forbids temporal delimiters and padding.
 func splitOBUs(temporalUnit []byte) [][]byte {
 	var obus [][]byte
 	for i := 0; i < len(temporalUnit); {
@@ -194,8 +191,6 @@ func splitOBUs(temporalUnit []byte) [][]byte {
 
 var annexBStartCode = []byte{0x00, 0x00, 0x00, 0x01}
 
-// newAVCCToAnnexB converts Matroska's length-prefixed H264 to the Annex-B
-// stream pion expects, with SPS/PPS from CodecPrivate before every keyframe.
 func newAVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
 	if len(codecPrivate) < 7 || codecPrivate[0] != 1 {
 		return nil, fmt.Errorf("h264: invalid or missing avcC CodecPrivate (%d bytes)", len(codecPrivate))
@@ -233,15 +228,75 @@ func newAVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
 		return nil, err
 	}
 
-	return lengthPrefixedToAnnexB(nalLengthSize, parameterSets), nil
+	return lengthPrefixedToAnnexB(nalLengthSize, parameterSets, isH264IDR), nil
 }
 
-func lengthPrefixedToAnnexB(nalLengthSize int, parameterSets []byte) frameRewriter {
-	return func(frame []byte, keyframe bool) []byte {
-		out := make([]byte, 0, len(frame)+len(parameterSets)+16)
-		if keyframe {
-			out = append(out, parameterSets...)
+func isH264IDR(header byte) bool {
+	return header&0x1f == 5
+}
+
+// BLA, IDR or CRA.
+func isH265IRAP(header byte) bool {
+	t := (header >> 1) & 0x3f
+	return t >= 16 && t <= 23
+}
+
+// configurationVersion is not checked, older muxers write 0.
+func newHVCCToAnnexB(codecPrivate []byte) (frameRewriter, error) {
+	if hasStartCode(codecPrivate) {
+		return lengthPrefixedToAnnexB(4, codecPrivate, isH265IRAP), nil
+	}
+	if len(codecPrivate) < 23 {
+		return nil, fmt.Errorf("h265: invalid or missing hvcC CodecPrivate (%d bytes, starts with % x)",
+			len(codecPrivate), codecPrivate[:min(len(codecPrivate), 8)])
+	}
+	nalLengthSize := int(codecPrivate[21]&0x03) + 1
+	numArrays := int(codecPrivate[22])
+
+	var parameterSets []byte
+	pos := 23
+	for a := 0; a < numArrays; a++ {
+		if pos+3 > len(codecPrivate) {
+			return nil, fmt.Errorf("h265: truncated hvcC")
 		}
+		numNalus := int(binary.BigEndian.Uint16(codecPrivate[pos+1:]))
+		pos += 3
+		for n := 0; n < numNalus; n++ {
+			if pos+2 > len(codecPrivate) {
+				return nil, fmt.Errorf("h265: truncated hvcC")
+			}
+			size := int(binary.BigEndian.Uint16(codecPrivate[pos:]))
+			pos += 2
+			if pos+size > len(codecPrivate) {
+				return nil, fmt.Errorf("h265: truncated hvcC parameter set")
+			}
+			parameterSets = append(parameterSets, annexBStartCode...)
+			parameterSets = append(parameterSets, codecPrivate[pos:pos+size]...)
+			pos += size
+		}
+	}
+
+	return lengthPrefixedToAnnexB(nalLengthSize, parameterSets, isH265IRAP), nil
+}
+
+func hasStartCode(data []byte) bool {
+	return bytes.HasPrefix(data, annexBStartCode) || bytes.HasPrefix(data, annexBStartCode[1:])
+}
+
+func lengthPrefixedToAnnexB(nalLengthSize int, parameterSets []byte,
+	isRandomAccess func(header byte) bool) frameRewriter {
+	return func(frame []byte, keyframe bool) []byte {
+		// A 3-byte start code could also be a length prefix.
+		if bytes.HasPrefix(frame, annexBStartCode) {
+			if !keyframe {
+				return frame
+			}
+			out := make([]byte, 0, len(parameterSets)+len(frame))
+			return append(append(out, parameterSets...), frame...)
+		}
+
+		out := make([]byte, len(parameterSets), len(frame)+len(parameterSets)+16)
+		copy(out, parameterSets)
 		for i := 0; i+nalLengthSize <= len(frame); {
 			var naluSize int
 			for b := 0; b < nalLengthSize; b++ {
@@ -251,9 +306,16 @@ func lengthPrefixedToAnnexB(nalLengthSize int, parameterSets []byte) frameRewrit
 			if naluSize <= 0 || i+naluSize > len(frame) {
 				break
 			}
+			// Not every muxer sets the keyframe flag.
+			if isRandomAccess(frame[i]) {
+				keyframe = true
+			}
 			out = append(out, annexBStartCode...)
 			out = append(out, frame[i:i+naluSize]...)
 			i += naluSize
+		}
+		if !keyframe {
+			return out[len(parameterSets):]
 		}
 		return out
 	}
@@ -261,8 +323,7 @@ func lengthPrefixedToAnnexB(nalLengthSize int, parameterSets []byte) frameRewrit
 
 const blockTimecodeWrap = 65536 * time.Millisecond
 
-// timecodeFixer works around ebml-go reading the signed 16 bit block offset
-// as unsigned, which makes negative offsets 65536ms too large.
+// ebml-go reads the signed block offset as unsigned.
 type timecodeFixer struct {
 	highest time.Duration
 	seen    bool
@@ -298,8 +359,7 @@ type streamPlan struct {
 	audioSkipReason  string
 }
 
-// openWebM's cleanup must shut down and drain the reader before closing the
-// file, or the parser's goroutine leaks or panics.
+// cleanup drains the reader first, or the parser goroutine leaks or panics.
 func openWebM(path string) (*webm.WebM, *webm.Reader, func(), error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -335,7 +395,7 @@ func probe(videoFile string, disableAudio bool) (*streamPlan, error) {
 	support, ok := supportedVideoCodecs[videoTrack.CodecID]
 	if !ok {
 		return nil, fmt.Errorf("video codec %q cannot be streamed "+
-			"(supported: VP8, VP9, AV1, H264)",
+			"(supported: VP8, VP9, AV1, H264, H265)",
 			videoTrack.CodecID)
 	}
 	payloader, rewrite, err := support.build(videoTrack.CodecPrivate)
@@ -389,8 +449,8 @@ func newRtpSender(track ghost.RTPWriter, payloader rtp.Payloader, clockRate uint
 		track: track,
 		packetizer: rtp.NewPacketizer(
 			rtpOutboundMTU,
-			0,
-			0,
+			0, // Value is handled when writing
+			0, // Value is handled when writing
 			payloader,
 			rtp.NewRandomSequencer(),
 			clockRate,
@@ -399,8 +459,7 @@ func newRtpSender(track ghost.RTPWriter, payloader rtp.Payloader, clockRate uint
 	}
 }
 
-// send derives the RTP timestamp from the container timecode, which keeps
-// audio and video in sync and handles B-frames going backwards.
+// Timestamps follow the container to keep audio and video in sync.
 func (rs *rtpSender) send(data []byte, tc time.Duration) {
 	want := uint32(int64(tc) * int64(rs.clockRate) / int64(time.Second))
 	rs.packetizer.SkipSamples(want - rs.offset)
@@ -420,8 +479,7 @@ func (rs *rtpSender) send(data []byte, tc time.Duration) {
 	}
 }
 
-// writePaced spreads large frames over the frame interval, because packets
-// lost in a burst are never retransmitted.
+// Packets lost in a burst are never retransmitted.
 func (rs *rtpSender) writePaced(packets []*rtp.Packet, budget time.Duration) int {
 	writeErrs := 0
 	write := func(p *rtp.Packet) {
@@ -481,6 +539,7 @@ func pump(sender *rtpSender, frames <-chan mediaFrame, started time.Time,
 
 	defer wg.Done()
 	for frame := range frames {
+		// now wait till it's ok to send that packet
 		if wait := frame.tc - time.Since(started); wait > 0 {
 			time.Sleep(wait)
 		}
@@ -511,6 +570,8 @@ func ingestControl(videoFile string, plan *streamPlan, videoTrack, audioTrack gh
 	}
 }
 
+var bFrameWarning sync.Once
+
 func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSender,
 	tcOffset time.Duration) (time.Duration, error) {
 
@@ -522,10 +583,11 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 
 	started := time.Now()
 	var lastTC time.Duration
+	var lastVideoTC time.Duration
+	haveVideoTC := false
 	fixer := &timecodeFixer{}
 
-	// Each track is paced on its own goroutine so large video frames don't
-	// delay audio.
+	// Separate pumps, so large video frames don't delay audio.
 	videoCh := make(chan mediaFrame, videoQueueDepth)
 	audioCh := make(chan mediaFrame, audioQueueDepth)
 	var pumps sync.WaitGroup
@@ -544,6 +606,7 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 
 	for packet := range reader.Chan {
 		if len(packet.Data) == 0 {
+			// we're done
 			break
 		}
 		if packet.Timecode == webm.BadTC {
@@ -563,6 +626,16 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 			continue
 		}
 
+		// Decreasing timecodes mean B-frames.
+		if haveVideoTC && tc < lastVideoTC {
+			bFrameWarning.Do(func() {
+				log.Warn().Msg("Video contains B-frames, which the eyeson media server does not " +
+					"support. The picture will most likely stay black.")
+			})
+		}
+		lastVideoTC = tc
+		haveVideoTC = true
+
 		// The parser reuses its buffers.
 		data := packet.Data
 		if plan.videoRewrite != nil {
@@ -578,6 +651,7 @@ func ingest(videoFile string, plan *streamPlan, videoSender, audioSender *rtpSen
 	return lastTC, nil
 }
 
+// Get a room depending on the provided api-key or guestlink.
 func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA string, insecure bool) (*eyeson.UserService, error) {
 	clientOptions := []eyeson.ClientOption{}
 	if len(customCA) > 0 {
@@ -587,7 +661,10 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 		clientOptions = append(clientOptions, eyeson.WithInsecureSkipVerify())
 	}
 
+	// determine if we have a guestlink
 	if strings.HasPrefix(apiKeyOrGuestlink, "http") {
+		// join as guest
+		// guest-link: https://app.eyeson.team/?guest=h7IHRfwnV6Yuk3QtL2jbktuh
 		u, err := url.Parse(apiKeyOrGuestlink)
 		if err != nil {
 			return nil, fmt.Errorf("Invalid guest-link")
@@ -609,6 +686,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 		return client.Rooms.GuestJoin(guestToken[0], userID, user, "")
 	}
 
+	// let's assume we have an apiKey, so fire up a new meeting
 	client, err := eyeson.NewClient(apiKeyOrGuestlink, clientOptions...)
 	if err != nil {
 		return nil, err
@@ -625,7 +703,7 @@ func getRoom(apiKeyOrGuestlink, apiEndpoint, user, roomID, userID, customCA stri
 	return client.Rooms.Join(roomID, user, options)
 }
 
-// waitReady logs progress, since room.WaitReady is silent for up to 180s.
+// room.WaitReady is silent for up to 180s.
 func waitReady(room *eyeson.UserService) error {
 	done := make(chan error, 1)
 	go func() { done <- room.WaitReady() }()
@@ -649,8 +727,7 @@ type callTerminator interface {
 	TerminateCall() error
 }
 
-// terminateCall adds a timeout, as TerminateCall blocks forever when the
-// websocket is down.
+// TerminateCall blocks forever if the websocket is down.
 func terminateCall(client callTerminator) {
 	done := make(chan error, 1)
 	go func() { done <- client.TerminateCall() }()
@@ -733,7 +810,13 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	playbackTerminatedCh := make(chan bool)
 	eyesonClient.SetConnectedHandler(func(connected bool, localVideoTrack ghost.RTPWriter,
 		localAudioTrack ghost.RTPWriter) {
-		go ingestControl(videoFile, plan, localVideoTrack, localAudioTrack, loopFlag)
+		if !connected {
+			return
+		}
+		go func() {
+			time.Sleep(startDelayFlag)
+			ingestControl(videoFile, plan, localVideoTrack, localAudioTrack, loopFlag)
+		}()
 	})
 
 	if err := eyesonClient.Call(); err != nil {
@@ -741,9 +824,11 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 		return
 	}
 
+	// install signal-handler
 	chStop := make(chan os.Signal, 1)
 	signal.Notify(chStop, syscall.SIGINT, syscall.SIGTERM)
 
+	// Block until playback is done
 	select {
 	case <-chStop:
 	case <-playbackTerminatedCh:
@@ -753,16 +838,36 @@ func videoPlayerExample(apiKeyOrGuestlink, videoFile, apiEndpoint, user, roomID,
 	signal.Stop(chStop)
 
 	log.Info().Msg("Stopping. So terminating this call (Ctrl-C again to force)")
+	// terminate this call
 	terminateCall(eyesonClient)
 }
 
 type Logger struct{}
 
-func (sl *Logger) Error(format string, v ...interface{}) { log.Error().Msgf(format, v...) }
-func (sl *Logger) Warn(format string, v ...interface{})  { log.Warn().Msgf(format, v...) }
-func (sl *Logger) Info(format string, v ...interface{})  { log.Info().Msgf(format, v...) }
-func (sl *Logger) Debug(format string, v ...interface{}) { log.Debug().Msgf(format, v...) }
-func (sl *Logger) Trace(format string, v ...interface{}) { log.Trace().Msgf(format, v...) }
+// Error log error msg
+func (sl *Logger) Error(format string, v ...interface{}) {
+	log.Error().Msgf(format, v...)
+}
+
+// Warn log warn message
+func (sl *Logger) Warn(format string, v ...interface{}) {
+	log.Warn().Msgf(format, v...)
+}
+
+// Info log info message
+func (sl *Logger) Info(format string, v ...interface{}) {
+	log.Info().Msgf(format, v...)
+}
+
+// Debug log debug message
+func (sl *Logger) Debug(format string, v ...interface{}) {
+	log.Debug().Msgf(format, v...)
+}
+
+// Trace log trace message
+func (sl *Logger) Trace(format string, v ...interface{}) {
+	log.Trace().Msgf(format, v...)
+}
 
 func initLogging() {
 	switch {
@@ -777,7 +882,7 @@ func initLogging() {
 	}
 }
 
-// silenceLibraryLogging mutes the webm parser, which logs every discardable block.
+// The webm parser logs every discardable block.
 func silenceLibraryLogging() {
 	stdlog.SetOutput(io.Discard)
 }
@@ -792,15 +897,12 @@ func main() {
 	cobra.OnInitialize(initLogging)
 
 	rootCommand.Version = Version
-	rootCommand.SetVersionTemplate(`{{.Version}}`)
+	rootCommand.SetVersionTemplate("{{.Version}}\n")
 	rootCommand.Long = `ghost-player streams a local video file into an eyeson meeting.
 
-Input must be a WebM or Matroska file. Video can be VP8, VP9, AV1 or H264;
+Input must be a WebM or Matroska file. Video can be VP8, VP9, AV1, H264 or H265;
 audio must be Opus. If the audio is in another format the video still plays,
-without sound.
-
-Use --check to see what a file contains and whether it can be played,
-without connecting to a meeting.`
+without sound.`
 
 	rootCommand.Flags().StringVarP(&apiEndpointFlag, "api-endpoint", "", "https://api.eyeson.team", "Set api-endpoint")
 	rootCommand.Flags().StringVarP(&userFlag, "user", "", "ghost-player", "User name to use")
@@ -813,8 +915,9 @@ without connecting to a meeting.`
 	rootCommand.Flags().BoolVarP(&widescreenFlag, "widescreen", "", true, "start room in widescreen mode")
 	rootCommand.Flags().BoolVarP(&loopFlag, "loop", "", true, "Restart video-playback on EOF")
 	rootCommand.Flags().BoolVarP(&insecureSkipVerifyFlag, "insecure", "", false, "if true don't verify remote tls certificates")
+	// Packets sent before DTLS is up are lost, the first keyframe with them.
+	rootCommand.Flags().DurationVarP(&startDelayFlag, "start-delay", "", 2*time.Second, "wait this long after connecting before playback starts, so the first keyframe is not lost")
 	rootCommand.Flags().BoolVarP(&noAudioFlag, "no-audio", "", false, "never send audio, even if the codec would match")
-	rootCommand.Flags().BoolVarP(&checkFlag, "check", "", false, "report the video file's container, resolution and codecs, then exit without connecting")
 
 	rootCommand.Execute()
 }
