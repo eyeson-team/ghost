@@ -25,8 +25,3 @@ and video.
 
 The rtp-packet stream is made available on the interface.
 
-## Development
-
-```sh
-$ make test # run the testsuite
-```
